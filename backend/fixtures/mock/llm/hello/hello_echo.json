@@ -1,0 +1,10 @@
+{
+  "output": {
+    "message": "Hello from the mock gateway",
+    "word_count": 5
+  },
+  "usage": {
+    "input_tokens": 20,
+    "output_tokens": 8
+  }
+}

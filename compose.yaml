@@ -1,0 +1,149 @@
+# mdcopilot-blog local stack (Phase 1). See docs/blog-agent/LOCAL_DEVELOPMENT.md.
+# Host ports bind to 127.0.0.1 only. No Redis: DBOS keeps queues and schedules in Postgres.
+# Warning: `docker compose config` prints values from .env (secrets included); do not paste its output.
+name: mdcopilot-blog
+
+x-backend: &backend
+  build:
+    context: ./backend
+    target: dev
+  image: mdcopilot-blog-backend:dev
+  env_file:
+    - .env
+  environment:
+    POSTGRES_HOST: db
+    BLOG_AGENT_MOCK_STEP_DELAY_SECONDS: "${BLOG_AGENT_MOCK_STEP_DELAY_SECONDS:-0}"
+  volumes:
+    - ./backend:/app
+
+services:
+  db:
+    # pgvector/pgvector:pg16, pinned to its multi-arch index digest (2026-09-17). To move it on purpose:
+    # docker buildx imagetools inspect pgvector/pgvector:pg16, then copy the top-level "Digest:" here.
+    image: pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
+    # Only the three variables Postgres needs, interpolated from .env. Not env_file, which would hand
+    # every provider key and SESSION_SECRET to the database container. Defaults match Settings.
+    environment:
+      POSTGRES_DB: "${POSTGRES_DB:-mdcopilot_blog}"
+      POSTGRES_USER: "${POSTGRES_USER:-mdcopilot_blog}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}"
+    ports:
+      - "127.0.0.1:${DB_HOST_PORT:-5440}:5432"
+    volumes:
+      - blog_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # Probe TCP (-h 127.0.0.1), not the Unix socket. On a fresh volume the image's temporary init server
+      # listens on the socket only, so a socket probe can pass before db:5432 accepts connections.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+      start_interval: 1s
+
+  # One-shot: alembic upgrade head, DBOS system-table migrations (in-process), seed, sync-prompts.
+  # api and worker wait for exit 0.
+  migrate:
+    <<: *backend
+    command: ["python", "-m", "mdcopilot_blog.cli", "migrate"]
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  # Enqueues through DBOSClient only; never calls DBOS.launch().
+  api:
+    <<: *backend
+    command:
+      - uvicorn
+      - --factory
+      - mdcopilot_blog.api.app:create_app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --reload
+      - --reload-dir
+      - /app/src
+      # Ignore X-Forwarded-For/-Proto: the client address is the TCP peer (the Vite proxy for browser traffic).
+      # Trusting them ("--proxy-headers --forwarded-allow-ips *") would let any client choose the IP that the
+      # login rate limit and app.login_attempts record. CSRF reads X-Forwarded-Proto itself (auth/csrf.py).
+      - --no-proxy-headers
+    ports:
+      - "127.0.0.1:${API_HOST_PORT:-8300}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz').status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+      start_interval: 2s
+
+  # The only DBOS executor. Recovery after a crash needs the same WORKER_EXECUTOR_ID and APP_VERSION.
+  worker:
+    <<: *backend
+    command: ["python", "-m", "mdcopilot_blog.worker"]
+    environment:
+      # YAML merge is shallow: this map replaces the anchor's, so the shared entries are repeated.
+      POSTGRES_HOST: db
+      BLOG_AGENT_MOCK_STEP_DELAY_SECONDS: "${BLOG_AGENT_MOCK_STEP_DELAY_SECONDS:-0}"
+      WORKER_EXECUTOR_ID: worker-1
+    # DBOS.destroy waits up to 25 s for running workflows on SIGTERM.
+    stop_grace_period: 60s
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      # The worker touches /tmp/worker-heartbeat every 10 s once DBOS is launched.
+      test: ["CMD-SHELL", "test $$(( $$(date +%s) - $$(stat -c %Y /tmp/worker-heartbeat) )) -lt 60"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
+      start_interval: 2s
+
+  # Vite dev server; proxies /api to api:8000 so the app is same-origin.
+  # The service must stay named "web" (vite.config.ts allowedHosts).
+  web:
+    build:
+      context: ./frontend
+      target: dev
+    image: mdcopilot-blog-web:dev
+    ports:
+      - "127.0.0.1:${WEB_HOST_PORT:-8310}:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      VITE_API_PROXY_TARGET: http://api:8000
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:5173/"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+      start_interval: 2s
+
+  # Tests, lint, alembic and one-off CLI commands: docker compose run --rm tools <cmd>
+  tools:
+    <<: *backend
+    profiles: [tools]
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["pytest", "-q"]
+
+volumes:
+  blog_pgdata: {}

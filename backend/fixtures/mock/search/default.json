@@ -1,0 +1,28 @@
+{
+  "provider": "fixture",
+  "model": "fixture-search",
+  "answer_text": "Specialist wait times remain long, and health systems are piloting AI-assisted triage.",
+  "citations": [
+    {
+      "url": "https://example.org/specialist-access-report",
+      "title": "Specialist access report (fixture)",
+      "start_index": 0,
+      "end_index": 38
+    },
+    {
+      "url": "https://example.org/ai-triage-pilot",
+      "title": "AI-assisted triage pilot (fixture)",
+      "start_index": 44,
+      "end_index": 88
+    }
+  ],
+  "sources": [
+    "https://example.org/specialist-access-report",
+    "https://example.org/ai-triage-pilot"
+  ],
+  "search_actions": 1,
+  "input_tokens": 0,
+  "output_tokens": 0,
+  "cost_usd": "0",
+  "latency_ms": 0
+}

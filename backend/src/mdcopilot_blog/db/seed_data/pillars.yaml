@@ -1,0 +1,87 @@
+# Content pillars from product spec section 9. weekdays: 0 = Monday ... 6 = Sunday.
+# Default rotation: Mon-Fri pillars A-E, Sat-Sun the Narrative Edition. Editable later in Settings.
+pillars:
+  - key: A
+    name: Specialist Scarcity & Access
+    description: >-
+      Why patients wait for specialist care and how specialist expertise can reach more of them:
+      shortages, wait times, regional gaps, referral bottlenecks and underserved populations.
+    weekdays: [0]
+    topics:
+      - specialist shortages
+      - wait times
+      - regional disparities
+      - referral bottlenecks
+      - specialist access
+      - scaling specialist expertise
+      - underserved populations
+  - key: B
+    name: Cognitive Architecture & Physician Reasoning
+    description: >-
+      How specialists actually reason (heuristics, edge cases, individual practice styles, decision
+      pathways), where generic LLMs fall short, and how AI can augment that reasoning.
+    weekdays: [1]
+    topics:
+      - clinical heuristics
+      - specialist reasoning
+      - edge cases
+      - individualized practice styles
+      - clinical decision pathways
+      - limitations of generic LLMs
+      - reasoning augmentation
+  - key: C
+    name: Burnout & Administrative Overload
+    description: >-
+      The administrative load on physicians: inbox and portal messages, phone intake, asynchronous
+      consultations, after-hours "pajama time" and the cognitive fatigue that follows.
+    weekdays: [2]
+    topics:
+      - inbox overload
+      - pajama time
+      - asynchronous consultations
+      - phone intake
+      - portal messages
+      - administrative burden
+      - cognitive fatigue
+  - key: D
+    name: The Agentic Shift
+    description: >-
+      The move from passive AI tools to active agents: agentic workflows, digital twins, copilots,
+      ambient scribes and multi-agent systems in healthcare.
+    weekdays: [3]
+    topics:
+      - AI agents
+      - agentic workflows
+      - digital twins
+      - AI copilots
+      - ambient scribes
+      - active vs passive AI
+      - multi-agent healthcare systems
+  - key: E
+    name: Governance & Clinical Autonomy
+    description: >-
+      Keeping clinicians in control: human-in-the-loop design, oversight, safety, liability,
+      transparency, deterministic guardrails and clinical autonomy.
+    weekdays: [4]
+    topics:
+      - human-in-the-loop
+      - clinical oversight
+      - AI safety
+      - governance
+      - liability
+      - transparency
+      - deterministic guardrails
+      - clinical autonomy
+  - key: NARRATIVE
+    name: Narrative Edition
+    description: >-
+      Weekend edition: forward-looking narrative pieces about the future specialist practice.
+      Vignettes must be sourced or clearly framed as hypothetical; never an invented first-person
+      clinician experience.
+    weekdays: [5, 6]
+    topics:
+      - case vignette
+      - future clinic
+      - Clinic of 2030
+      - physician + digital twin workflows
+      - future specialist practice

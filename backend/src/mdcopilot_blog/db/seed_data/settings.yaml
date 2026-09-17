@@ -1,0 +1,16 @@
+# Default blog_settings v1 (seeded once by `python -m mdcopilot_blog.cli seed`).
+# Editable later in Settings; each save creates a new version.
+schedule:
+  time: "07:00"
+  timezone: Asia/Kolkata
+novelty_threshold: 0.85
+# Topic scoring weights (ARCHITECTURE section 9); they sum to 1.0
+score_weights:
+  timeliness: 0.25
+  novelty: 0.20
+  evidence: 0.20
+  mdcopilot_relevance: 0.15
+  audience: 0.10
+  editorial: 0.10
+# Who may approve a version whose quality gates failed (owner decision pending, ARCHITECTURE 24.2)
+gate_override_policy: admin_with_reason

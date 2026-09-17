@@ -1,0 +1,66 @@
+# Default brand profile v1, from product spec sections 7, 8, 17, 18 and 51.
+# Editable later in Settings (the Gemini content-strategy conversation will refine it).
+name: MDCopilot
+description: >-
+  Thought leadership at the intersection of healthcare, AI, physicians, specialist access,
+  clinical operations and agentic AI.
+target_audience: >-
+  Specialist physicians, clinical leaders and healthcare operations teams evaluating how AI can
+  support clinical work.
+mission: >-
+  Show how AI can amplify specialist expertise, with physicians in control, through specific,
+  evidence-backed and differentiated analysis.
+narrative: an amplifier of specialist leverage, not a replacement for physicians
+focus_areas:
+  - healthcare AI
+  - specialist physicians
+  - digital twins
+  - physician reasoning
+  - specialist scarcity
+  - specialist access
+  - physician burnout
+  - administrative overload
+  - agentic healthcare
+  - clinical AI governance
+  - human-in-the-loop AI
+  - clinical workflow automation
+  - AI augmentation
+emphasis:
+  - clinical reasoning
+  - specialist expertise
+  - personalized workflows
+  - responsible AI
+  - human oversight
+  - practical healthcare operations
+tone:
+  - authoritative
+  - clinically grounded
+  - intellectually sharp
+  - pragmatic
+  - empathetic
+  - evidence-driven
+avoid:
+  - excessive adjectives
+  - generic AI language
+  - fake urgency
+  - exaggerated claims
+  - unsupported statistics
+  - fabricated anecdotes
+  - fabricated quotes
+  - fabricated physician experiences
+# Quality gate 10 fails when any of these phrases appears (case-insensitive match is decided in Phase 5)
+prohibited_language:
+  - AI is transforming healthcare
+  - revolutionize
+  - revolutionizing
+  - game-changer
+  - game changer
+  - in today's fast-paced world
+  - unlock the power of
+cta: Learn how MDCopilot supports specialist physicians at www.mdcopilot.health.
+website: https://www.mdcopilot.health
+target_word_count:
+  min: 850
+  max: 1150
+# Required (quality gate 15); appended to every rendered article
+ai_disclosure: This article was researched and drafted with AI assistance and reviewed by the MDCopilot team.
