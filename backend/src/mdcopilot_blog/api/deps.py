@@ -15,7 +15,7 @@ from mdcopilot_blog.domain.enums import Permission, Role
 from mdcopilot_blog.domain.rbac import permissions_for
 from mdcopilot_blog.errors import ProblemError
 from mdcopilot_blog.settings import Settings
-from mdcopilot_blog.workflows.client import WorkflowClientProtocol
+from mdcopilot_blog.workflows.client import WorkflowClient
 
 LOGIN_PATH = "/api/auth/login"
 
@@ -25,7 +25,7 @@ def utcnow() -> datetime:
 
 
 def _state(request: Request, name: str) -> Any:
-    """app.state first (set by create_app, the lifespan and test fixtures), then lifespan-provided request.state."""
+    """app.state first (set by create_app, the lifespan), then lifespan-provided request.state."""
     value = getattr(request.app.state, name, None)
     if value is None:
         value = getattr(request.state, name, None)
@@ -44,13 +44,13 @@ async def get_session(request: Request) -> AsyncIterator[AsyncSession]:
         yield session
 
 
-def get_workflow_client(request: Request) -> WorkflowClientProtocol:
-    return cast(WorkflowClientProtocol, _state(request, "workflow_client"))
+def get_workflow_client(request: Request) -> WorkflowClient:
+    return cast(WorkflowClient, _state(request, "workflow_client"))
 
 
 SettingsDep = Annotated[Settings, Depends(get_settings_dep)]
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
-WorkflowClientDep = Annotated[WorkflowClientProtocol, Depends(get_workflow_client)]
+WorkflowClientDep = Annotated[WorkflowClient, Depends(get_workflow_client)]
 
 
 @dataclass(frozen=True)
@@ -67,7 +67,8 @@ async def current_principal(request: Request, db: SessionDep, settings: Settings
     token = request.cookies.get(settings.session_cookie_name)
     if not token:
         raise ProblemError(401, "Not authenticated")
-    resolved = await resolve_session(db, token, now=utcnow())
+    passive = request.method in SAFE_METHODS and request.headers.get("x-session-activity") == "passive"
+    resolved = await resolve_session(db, token, now=utcnow(), touch=not passive)
     if resolved is None:
         raise ProblemError(401, "Not authenticated")
     await db.commit()  # persists the throttled last_seen_at touch

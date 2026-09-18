@@ -2,11 +2,11 @@
 
 Layout: ``backend/prompts/<agent>/<name-last-segment>.v<version>.md`` with YAML front matter
 between the first two ``---`` lines. A registered (name, version) whose file bytes changed
-without a version bump is refused (ARCHITECTURE §19).
+without a version bump is refused.
 """
 
 import hashlib
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -161,13 +161,17 @@ class PromptRegistry:
         }
 
     @classmethod
-    def from_directory(cls, root: Path) -> "PromptRegistry":
+    def from_directory(cls, root: Path, *, agents: Collection[str] | None = None) -> "PromptRegistry":
         if not root.is_dir():
             raise PromptRegistryError(f"prompt directory {root} does not exist")
         env = _make_environment()
         templates: dict[tuple[str, int], PromptTemplate] = {}
         front_matter: dict[tuple[str, int], dict[str, Any]] = {}
-        for path in sorted(root.glob("**/*.v*.md")):
+        if agents is None:
+            paths = sorted(root.glob("**/*.v*.md"))
+        else:
+            paths = sorted(path for agent in agents for path in (root / agent).glob("**/*.v*.md"))
+        for path in paths:
             if not path.is_file():
                 continue
             template, front = _parse_file(root, path, env)

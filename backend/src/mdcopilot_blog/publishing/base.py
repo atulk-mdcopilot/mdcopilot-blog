@@ -1,4 +1,4 @@
-"""Publisher interface (ARCHITECTURE §14). Phase 1 ships only NullPublisher."""
+"""Publisher interface and shared payload types."""
 
 import uuid
 from datetime import datetime
@@ -18,6 +18,7 @@ class PublishPayload(BaseModel):
     excerpt: str
     status: Literal["draft", "published"]
     seo: dict[str, object] = Field(default_factory=dict)
+    external_post_id: str | None = None
 
 
 class PublisherCapabilities(BaseModel):
@@ -32,6 +33,7 @@ class RemotePost(BaseModel):
     slug: str
     status: str
     url: str | None
+    title: str | None = None
 
 
 class PublicationResult(BaseModel):

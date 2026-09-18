@@ -1,0 +1,150 @@
+"""Structured article writing with validated source markers and component boundaries."""
+
+import json
+from collections.abc import Sequence
+from typing import Any
+
+from mdcopilot_blog.agents.common import (
+    UNTRUSTED_NOTICE,
+    NumberedSource,
+    render_brand_voice,
+    render_source_list,
+    resolve_markers,
+)
+from mdcopilot_blog.domain.article_assembly import VersionContent, apply_component, build_version_content
+from mdcopilot_blog.domain.config import BrandProfileValues, EffectiveConfig, WordCountRange
+from mdcopilot_blog.domain.contracts import ArticleDraft, AvoidBundle, ComponentDraft, ResearchPacket, RevisionFinding
+from mdcopilot_blog.domain.enums import AgentName, ArticleComponent, SectionKey
+from mdcopilot_blog.domain.errors import ArticleStructureError, OutputRejected, UnknownCitationMarker
+from mdcopilot_blog.llm.gateway import AgentResult, AgentSpec, CallContext, LLMGateway
+
+WRITER_DRAFT_SPEC = AgentSpec(
+    name=AgentName.WRITER,
+    version="1",
+    prompt_name="writer/draft",
+    output_type=ArticleDraft,
+    max_output_tokens=4500,
+    reasoning="medium",
+)
+WRITER_REVISE_SPEC = AgentSpec(
+    name=AgentName.WRITER,
+    version="1",
+    prompt_name="writer/revise",
+    output_type=ArticleDraft,
+    max_output_tokens=4500,
+    reasoning="medium",
+)
+WRITER_COMPONENT_SPEC = AgentSpec(
+    name=AgentName.WRITER,
+    version="1",
+    prompt_name="writer/component",
+    output_type=ComponentDraft,
+    max_output_tokens=2000,
+    reasoning="medium",
+)
+
+
+def build_variables(
+    *, brand: BrandProfileValues, avoid: AvoidBundle, word_count: WordCountRange, voice: str | None = None
+) -> dict[str, object]:
+    return {
+        "untrusted_notice": UNTRUSTED_NOTICE,
+        "brand_voice": render_brand_voice(brand),
+        "avoid_bundle": avoid.model_dump_json(),
+        "word_count_min": word_count.min,
+        "word_count_max": word_count.max,
+        "voice": voice or ", ".join(brand.tone),
+    }
+
+
+def check_draft(draft: ArticleDraft, numbered: Sequence[NumberedSource]) -> VersionContent:
+    content = build_version_content(
+        title_options=draft.title_options,
+        sections=draft.sections,
+        pull_quote=draft.pull_quote,
+        cta=draft.cta,
+        excerpt=draft.excerpt,
+    )
+    resolve_markers(content.citation_markers, numbered)
+    return content
+
+
+async def run_writer(
+    gateway: LLMGateway,
+    *,
+    ctx: CallContext,
+    config: EffectiveConfig,
+    brand: BrandProfileValues,
+    avoid: AvoidBundle,
+    topic: dict[str, Any],
+    packet: ResearchPacket,
+    numbered: Sequence[NumberedSource],
+    base: VersionContent | None = None,
+    findings: Sequence[RevisionFinding] = (),
+    component: ArticleComponent | None = None,
+    section_key: SectionKey | None = None,
+    instructions: str | None = None,
+    voice: str | None = None,
+) -> AgentResult[Any]:
+    spec: AgentSpec[Any] = WRITER_COMPONENT_SPEC if component else WRITER_REVISE_SPEC if findings else WRITER_DRAFT_SPEC
+    packet_data = packet.model_dump(mode="json", exclude={"source_refs"})
+    prompt = (
+        "# Topic\n"
+        + json.dumps(topic, ensure_ascii=False)
+        + "\n# Research packet\n"
+        + json.dumps(packet_data, ensure_ascii=False)
+        + "\n# Sources\n"
+        + render_source_list(numbered, include_text=True)
+    )
+    if base:
+        prompt += "\n# Current article\n" + json.dumps(
+            {
+                "titleOptions": base.title_options.model_dump(),
+                "sections": [s.model_dump() for s in base.sections],
+                "pullQuote": base.pull_quote,
+                "cta": base.cta,
+                "excerpt": base.excerpt,
+            }
+        )
+    mapping = {f"F{i}": finding.finding_id for i, finding in enumerate(findings, 1)}
+    if findings:
+        prompt += "\n# Findings\n" + json.dumps(
+            [{**f.model_dump(), "findingId": marker} for marker, f in zip(mapping, findings, strict=True)]
+        )
+    if component:
+        prompt += f"\n# Component\n{component.value}\nsectionKey: {section_key.value if section_key else 'null'}"
+    if instructions:
+        prompt += "\n# Instructions from the editor\n" + instructions
+
+    def validate(output: Any) -> None:
+        try:
+            if component:
+                if base is None:
+                    raise OutputRejected("component regeneration requires a base article")
+                if output.component != component or output.section_key != section_key:
+                    raise OutputRejected("return exactly the requested component and sectionKey")
+                content = apply_component(base, output)
+                resolve_markers(content.citation_markers, numbered)
+            else:
+                check_draft(output, numbered)
+                if findings and (
+                    {r.finding_id for r in output.resolutions} != set(mapping)
+                    or len(output.resolutions) != len(mapping)
+                ):
+                    raise OutputRejected("include exactly one resolution for every F marker")
+        except (ArticleStructureError, UnknownCitationMarker) as exc:
+            raise OutputRejected(str(exc)) from exc
+
+    result = await gateway.run(
+        spec,
+        variables=build_variables(brand=brand, avoid=avoid, word_count=config.word_count, voice=voice),
+        user_prompt=prompt,
+        ctx=ctx,
+        route_override=config.routes[spec.name.value],
+        prompt_version=config.prompt_versions.get(spec.prompt_name),
+        output_check=validate,
+    )
+    if findings:
+        for resolution in result.output.resolutions:
+            resolution.finding_id = mapping[resolution.finding_id]
+    return result

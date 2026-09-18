@@ -1,1 +1,1 @@
-"""Blog publishers (ARCHITECTURE §14)."""
+"""Blog publishers."""

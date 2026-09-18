@@ -1,7 +1,7 @@
-"""Web search provider interface. Real providers arrive in Phase 2."""
+"""Web-search provider interface and shared result types."""
 
 from decimal import Decimal
-from typing import Protocol
+from typing import Literal, Protocol
 
 from pydantic import BaseModel, Field
 
@@ -11,6 +11,31 @@ class SearchQuery(BaseModel):
     allowed_domains: list[str] = Field(default_factory=list)
     max_results: int = 10
     recency_days: int | None = None
+    mode: Literal["broad", "deep", "verification"] = "broad"
+    route: list[str] | None = None
+
+
+class SearchProviderError(RuntimeError):
+    """A search provider call failed; picklable so DBOS steps can carry it."""
+
+    def __init__(self, provider: str, error_class: str, status_code: int | None, message: str, retryable: bool) -> None:
+        super().__init__(provider, error_class, status_code, message, retryable)
+        self.provider = provider
+        self.error_class = error_class
+        self.status_code = status_code
+        self.message = message
+        self.retryable = retryable
+
+    def __str__(self) -> str:
+        prefix = (
+            f"{self.error_class} (HTTP {self.status_code}): "
+            if self.status_code is not None
+            else f"{self.error_class}: "
+        )
+        return f"{prefix}{self.message}"
+
+    def __reduce__(self) -> tuple[object, ...]:
+        return (SearchProviderError, (self.provider, self.error_class, self.status_code, self.message, self.retryable))
 
 
 class Citation(BaseModel):

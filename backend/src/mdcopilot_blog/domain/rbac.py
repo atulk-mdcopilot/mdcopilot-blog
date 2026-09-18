@@ -1,4 +1,4 @@
-"""Role to permission matrix (ARCHITECTURE §17). Deny by default."""
+"""Role to permission matrix. Deny by default."""
 
 from collections.abc import Mapping
 from types import MappingProxyType

@@ -30,7 +30,7 @@ def _session_response(
 
 
 def _client_ip(request: Request) -> str | None:
-    # Task 14 runs the api with --no-proxy-headers (no pinned web IP), so request.client is always the
+    # The API runs with --no-proxy-headers (no pinned web IP), so request.client is always the
     # direct TCP peer and is never rewritten from X-Forwarded-For. If that ever changes, uvicorn's
     # ProxyHeadersMiddleware must trust only the real proxy's address (never "*" or a whole subnet), or
     # a client can forge a new X-Forwarded-For on each attempt and bypass MAX_FAILURES_PER_IP.

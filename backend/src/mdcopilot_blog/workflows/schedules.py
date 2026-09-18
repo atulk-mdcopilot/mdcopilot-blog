@@ -1,4 +1,4 @@
-"""Daily generation schedule (ARCHITECTURE §5.4).
+"""Daily generation schedule.
 
 A DBOS cron schedule fires `daily_trigger`, which creates at most one daily run per local date and enqueues the
 target pipeline on the `pipeline` queue under the workflow id `daily-<YYYY-MM-DD>`. The queue runs one pipeline
@@ -23,21 +23,17 @@ from mdcopilot_blog.db.models import BlogRun
 from mdcopilot_blog.domain.enums import RunKind, RunStatus
 from mdcopilot_blog.ids import new_trace_id, uuid7
 from mdcopilot_blog.settings import Settings
-from mdcopilot_blog.workflows.hello import hello_pipeline
+from mdcopilot_blog.workflows.discover import discover_topics
 from mdcopilot_blog.workflows.names import (
-    DAILY_TARGET_WORKFLOW,
     QUEUE_PIPELINE,
     SCHEDULE_DAILY,
     STEP_DAILY_CREATE_RUN,
     WORKFLOW_DAILY_TRIGGER,
-    WORKFLOW_HELLO,
 )
 from mdcopilot_blog.workflows.runtime import get_runtime
 
 logger = logging.getLogger(__name__)
 
-# Workflows the daily trigger may start, by registered name. Phase 3 adds discover_topics here.
-DAILY_TARGETS: dict[str, Callable[[str], Coroutine[Any, Any, dict[str, object]]]] = {WORKFLOW_HELLO: hello_pipeline}
 MANUAL_RUN_FINAL_STATUSES = (RunStatus.FAILED.value, RunStatus.CANCELLED.value)
 
 
@@ -117,17 +113,21 @@ async def create_daily_run_step(run_date_iso: str) -> str | None:
 
 @DBOS.workflow(name=WORKFLOW_DAILY_TRIGGER)
 async def daily_trigger(scheduled_at: datetime, context: Any) -> str | None:
-    local_date = scheduled_at.astimezone(ZoneInfo(get_runtime().settings.timezone)).date()
+    from mdcopilot_blog.workflows.automation import effective_schedule_settings
+
+    effective = await effective_schedule_settings()
+    if not effective.scheduler_enabled or not effective.agent_enabled:
+        return None
+    local_date = scheduled_at.astimezone(ZoneInfo(effective.timezone)).date()
     run_id = await create_daily_run_step(local_date.isoformat())
     if run_id is None:
         return None
-    # Same workflow timeout as a manual run (services/runs.py): a stuck daily run is cancelled by DBOS,
-    # and hello_pipeline's cancellation handler then marks it FAILED.
-    timeout_seconds = get_runtime().settings.production_timeout_minutes * 60
+    # Same workflow timeout as a manual discovery run (services/runs.py).
+    timeout_seconds = get_runtime().settings.discovery_timeout_minutes * 60
     # Enqueued, not started: the pipeline queue (worker_concurrency=1) runs it after any in-flight run.
     # The trigger does not wait for the child, so it frees its own slot on that queue straight away.
     with SetWorkflowID(daily_child_workflow_id(local_date)), SetWorkflowTimeout(timeout_seconds):
-        handle = await DBOS.enqueue_workflow_async(QUEUE_PIPELINE, DAILY_TARGETS[DAILY_TARGET_WORKFLOW], run_id)
+        handle = await DBOS.enqueue_workflow_async(QUEUE_PIPELINE, discover_topics, run_id)
     logger.info("daily run enqueued", extra={"run_id": run_id, "context": context})
     return handle.get_workflow_id()
 

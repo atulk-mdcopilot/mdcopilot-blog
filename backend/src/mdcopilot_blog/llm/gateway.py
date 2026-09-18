@@ -1,33 +1,47 @@
-"""LLM gateway: every model, web-search and embedding call goes through here (ARCHITECTURE §7.1).
+"""LLM gateway: every model, web-search and embedding call goes through here.
 
 ``run()`` walks the configured route itself (no FallbackModel). Each attempt writes exactly one
-``blog_llm_calls`` row. Phase 1 builds mock models only; real providers arrive in Phase 2.
+``blog_llm_calls`` row. Calls share the same recording and budget enforcement path.
 """
 
-import hashlib
-import random
 import time
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from mdcopilot_blog.llm.providers import RealModelFactory
 
 import httpx
 import httpx2
 from pydantic import BaseModel
-from pydantic_ai import Agent, ModelResponse, capture_run_messages, models
+from pydantic_ai import Agent, ModelResponse, ModelRetry, capture_run_messages
 from pydantic_ai.exceptions import ModelAPIError, UnexpectedModelBehavior
 from pydantic_ai.messages import ModelMessage
-from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mdcopilot_blog.domain.enums import AgentName, CallKind, CallStatus
-from mdcopilot_blog.llm.recorder import CallRecord, CallRecorder
-from mdcopilot_blog.llm.routes import ModelChoice, parse_choice, route_for
+from mdcopilot_blog.domain.errors import OutputRejected
+from mdcopilot_blog.llm.concurrency import ProviderLimiter, process_limiter
+from mdcopilot_blog.llm.embeddings import EMBED_BATCH_SIZE, GeminiEmbeddingProvider, batched
+from mdcopilot_blog.llm.pricing import (
+    REAL_PROVIDERS,
+    SEARCH_FEE_SKU,
+    DbPriceBook,
+    OverridePrice,
+    PriceMissing,
+    TokenUsage,
+    price_agent_attempt,
+    price_embedding_call,
+    price_search_call,
+)
+from mdcopilot_blog.llm.recorder import PRICE_VERSION, CallRecord, CallRecorder
+from mdcopilot_blog.llm.routes import ModelChoice, model_settings_for, parse_choice, route_for, route_from_entries
 from mdcopilot_blog.llm.search.base import SearchQuery, SearchResult, WebSearchProvider
-from mdcopilot_blog.llm.search.fixture import FixtureSearchProvider
 from mdcopilot_blog.prompts.registry import PromptRegistry, RenderedPrompt
 from mdcopilot_blog.settings import Settings
 
@@ -41,9 +55,6 @@ ADVANCE_ERRORS: tuple[type[Exception], ...] = (
     httpx2.TransportError,
 )
 
-MOCK_EMBEDDING_PROVIDER = "mock"
-MOCK_EMBEDDING_MODEL = "mock:embedding"
-
 
 @dataclass(frozen=True)
 class AgentSpec[OutputT: BaseModel]:
@@ -54,6 +65,7 @@ class AgentSpec[OutputT: BaseModel]:
     max_output_tokens: int
     output_retries: int = 1
     timeout_seconds: float = 120.0
+    reasoning: Literal["minimal", "low", "medium", "high"] | None = None
 
 
 @dataclass(frozen=True)
@@ -105,24 +117,13 @@ class ProviderNotAvailable(GatewayError):
     """A real provider was requested but is not built or not allowed."""
 
 
-class ModelFactory(Protocol):
-    def build(self, choice: ModelChoice, spec: AgentSpec[Any]) -> Model: ...
-
-
-class UnavailableModelFactory(ModelFactory):
-    """Used when mock mode is off. Real model construction lands in Phase 2."""
-
-    def build(self, choice: ModelChoice, spec: AgentSpec[Any]) -> Model:
-        raise ProviderNotAvailable("real providers are enabled in Phase 2")
-
-
 class UnavailableSearchProvider:
-    """Used when mock mode is off. Real search providers land in Phase 2."""
+    """Fallback used when no configured real web-search provider can be built."""
 
     name = "unavailable"
 
     async def search(self, query: SearchQuery) -> SearchResult:
-        raise ProviderNotAvailable("real search providers are enabled in Phase 2")
+        raise ProviderNotAvailable("no real web-search provider is configured")
 
 
 @dataclass(frozen=True)
@@ -135,6 +136,7 @@ class _Usage:
     cost_usd: Decimal
     model_served: str | None
     provider_served: str | None
+    any_cost: bool
     raw: dict[str, object]
 
 
@@ -143,6 +145,7 @@ def _sum_usage(messages: Sequence[ModelMessage]) -> _Usage:
     requests: list[dict[str, object]] = []
     totals = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "reasoning": 0}
     cost = Decimal(0)
+    any_cost = False
     for response in responses:
         usage = response.usage
         reasoning = int(getattr(usage, "output_reasoning_tokens", 0) or 0)
@@ -151,6 +154,8 @@ def _sum_usage(messages: Sequence[ModelMessage]) -> _Usage:
         totals["cache_read"] += usage.cache_read_tokens
         totals["cache_write"] += usage.cache_write_tokens
         totals["reasoning"] += reasoning
+        if usage.cost is not None:
+            any_cost = True
         cost += usage.cost or Decimal(0)
         requests.append(
             {
@@ -175,19 +180,28 @@ def _sum_usage(messages: Sequence[ModelMessage]) -> _Usage:
         cost_usd=cost,
         model_served=last.model_name if last is not None else None,
         provider_served=last.provider_name if last is not None else None,
+        any_cost=any_cost,
         raw={"requests": requests},
     )
 
 
-def mock_embedding(text: str, dimensions: int) -> list[float]:
-    """Deterministic vector in [-1, 1]^dimensions, seeded by sha256(text)."""
-    seed = int.from_bytes(hashlib.sha256(text.encode("utf-8")).digest(), "big")
-    rng = random.Random(seed)
-    return [rng.uniform(-1.0, 1.0) for _ in range(dimensions)]
+def _detail_int(details: Mapping[str, object], key: str) -> int:
+    value = details.get(key)
+    return value if isinstance(value, int) else 0
 
 
 def _elapsed_ms(started: float) -> int:
     return int((time.perf_counter() - started) * 1000)
+
+
+def _attach_output_check[OutputT: BaseModel](agent: Agent[None, OutputT], check: Callable[[OutputT], None]) -> None:
+    @agent.output_validator
+    def _validate(output: OutputT) -> OutputT:
+        try:
+            check(output)
+        except OutputRejected as exc:
+            raise ModelRetry(exc.args[0]) from exc
+        return output
 
 
 class LLMGateway:
@@ -197,20 +211,30 @@ class LLMGateway:
         settings: Settings,
         prompts: PromptRegistry,
         recorder: CallRecorder,
-        model_factory: ModelFactory,
+        model_factory: "RealModelFactory",
         search_provider: WebSearchProvider,
+        limiter: ProviderLimiter,
+        price_book: DbPriceBook,
+        embedding_provider: GeminiEmbeddingProvider | None = None,
     ) -> None:
         self._settings = settings
         self._prompts = prompts
         self._recorder = recorder
         self._model_factory = model_factory
         self._search_provider = search_provider
+        self._limiter = limiter
+        self._price_book = price_book
+        self._embedding_provider = embedding_provider
 
     async def _check_budget(self, ctx: CallContext) -> None:
-        spent = await self._recorder.run_cost(ctx.run_id)
+        if ctx.run_id is None and ctx.attempt_id is None:
+            return  # calls with neither id are uncapped
+        spent = await self._recorder.budget_spent(ctx)
         cap = self._settings.max_cost_per_run_usd
         if spent >= cap:
-            raise BudgetExceeded(f"run {ctx.run_id} has spent {spent} USD; the cap is {cap} USD")
+            raise BudgetExceeded(
+                f"run {ctx.run_id} (attempt {ctx.attempt_id}) has spent {spent} USD; the cap is {cap} USD"
+            )
 
     async def _record_agent_attempt(
         self,
@@ -226,6 +250,9 @@ class LLMGateway:
         usage: _Usage,
         provider_fallback: str | None,
         error: Exception | None,
+        cost_usd: Decimal | None = None,
+        price_version: str | None = None,
+        raw_extra: dict[str, object] | None = None,
     ) -> None:
         await self._recorder.record(
             CallRecord(
@@ -249,12 +276,33 @@ class LLMGateway:
                 cache_read_tokens=usage.cache_read_tokens,
                 cache_write_tokens=usage.cache_write_tokens,
                 reasoning_tokens=usage.reasoning_tokens,
-                cost_usd=usage.cost_usd,
-                usage_raw=usage.raw,
+                cost_usd=usage.cost_usd if cost_usd is None else cost_usd,
+                usage_raw={**usage.raw, **(raw_extra or {})},
+                price_version=PRICE_VERSION if price_version is None else price_version,
                 error_class=None if error is None else type(error).__name__,
                 error_message=None if error is None else str(error),
             )
         )
+
+    async def _price_attempt(
+        self, choice: ModelChoice, system: str | None, usage: _Usage, at: datetime
+    ) -> tuple[Decimal, str, dict[str, object]]:
+        """Price one attempt using the configured price book."""
+        priced = await price_agent_attempt(
+            self._price_book,
+            provider_requested=choice.provider,
+            model_requested=choice.model,
+            provider_served=usage.provider_served or system,
+            model_served=usage.model_served,
+            usage=TokenUsage(
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                cache_read_tokens=usage.cache_read_tokens,
+            ),
+            sdk_cost=usage.cost_usd if usage.any_cost else None,
+            at=at,
+        )
+        return priced.cost_usd, priced.price_version, {"pricing": priced.source}
 
     async def run[OutputT: BaseModel](
         self,
@@ -263,11 +311,16 @@ class LLMGateway:
         variables: Mapping[str, object],
         user_prompt: str,
         ctx: CallContext,
+        route_override: Sequence[str] | None = None,
+        prompt_version: int | None = None,
+        output_check: Callable[[OutputT], None] | None = None,
     ) -> AgentResult[OutputT]:
         await self._check_budget(ctx)
-        rendered = self._prompts.render(spec.prompt_name, variables)
-        route = route_for(self._settings, spec.name)
-        model_settings: ModelSettings = {"max_tokens": spec.max_output_tokens, "timeout": spec.timeout_seconds}
+        rendered = self._prompts.render(spec.prompt_name, variables, version=prompt_version)
+        if route_override is None:
+            route = route_for(self._settings, spec.name)
+        else:
+            route = route_from_entries(self._settings, spec.name, route_override)
         params: dict[str, object] = {
             "max_tokens": spec.max_output_tokens,
             "timeout": spec.timeout_seconds,
@@ -280,6 +333,14 @@ class LLMGateway:
         for index, choice in enumerate(route):
             if index > 0:
                 await self._check_budget(ctx)  # the cap is checked before every model call
+            model_settings: ModelSettings = model_settings_for(
+                choice,
+                max_tokens=spec.max_output_tokens,
+                timeout_seconds=spec.timeout_seconds,
+                reasoning=spec.reasoning,
+            )
+
+            at = datetime.now(UTC)
             started = time.perf_counter()
             messages: list[ModelMessage] = []
             system: str | None = None
@@ -293,8 +354,13 @@ class LLMGateway:
                         instructions=rendered.text,
                         retries={"output": spec.output_retries},
                     )
-                    result = await agent.run(user_prompt, model_settings=model_settings)
+                    if output_check is not None:
+                        _attach_output_check(agent, output_check)
+                    async with self._limiter.slot(choice.provider):
+                        result = await agent.run(user_prompt, model_settings=model_settings)
             except ADVANCE_ERRORS as exc:
+                failed_usage = _sum_usage(messages)
+                cost_usd, price_version, raw_extra = await self._price_attempt(choice, system, failed_usage, at)
                 await self._record_agent_attempt(
                     spec=spec,
                     rendered=rendered,
@@ -304,14 +370,19 @@ class LLMGateway:
                     ctx=ctx,
                     params=params,
                     started=started,
-                    usage=_sum_usage(messages),
+                    usage=failed_usage,
                     provider_fallback=system,
                     error=exc,
+                    cost_usd=cost_usd,
+                    price_version=price_version,
+                    raw_extra=raw_extra,
                 )
                 failures.append((choice.ref(), type(exc).__name__))
                 previous_ref = choice.ref()
                 continue
             except Exception as exc:
+                failed_usage = _sum_usage(messages)
+                cost_usd, price_version, raw_extra = await self._price_attempt(choice, system, failed_usage, at)
                 await self._record_agent_attempt(
                     spec=spec,
                     rendered=rendered,
@@ -321,13 +392,17 @@ class LLMGateway:
                     ctx=ctx,
                     params=params,
                     started=started,
-                    usage=_sum_usage(messages),
+                    usage=failed_usage,
                     provider_fallback=system,
                     error=exc,
+                    cost_usd=cost_usd,
+                    price_version=price_version,
+                    raw_extra=raw_extra,
                 )
                 raise
 
             usage = _sum_usage(result.all_messages())
+            cost_usd, price_version, raw_extra = await self._price_attempt(choice, system, usage, at)
             await self._record_agent_attempt(
                 spec=spec,
                 rendered=rendered,
@@ -340,6 +415,9 @@ class LLMGateway:
                 usage=usage,
                 provider_fallback=system,
                 error=None,
+                cost_usd=cost_usd,
+                price_version=price_version,
+                raw_extra=raw_extra,
             )
             return AgentResult(
                 output=result.output,
@@ -348,7 +426,7 @@ class LLMGateway:
                 attempts=index + 1,
                 input_tokens=usage.input_tokens,
                 output_tokens=usage.output_tokens,
-                cost_usd=usage.cost_usd,
+                cost_usd=cost_usd,
             )
 
         raise RouteExhausted(spec.name.value, failures)
@@ -358,15 +436,30 @@ class LLMGateway:
         provider = self._search_provider
         params = query.model_dump(mode="json")
         started = time.perf_counter()
+
+        model_requested = getattr(provider, "model", None)
+        if not isinstance(model_requested, str):
+            model_requested = provider.name
+        provider_served_key = provider.name
+        is_real = provider_served_key in REAL_PROVIDERS
+        at: datetime | None = None
+        fee: OverridePrice | None = None
+        if is_real:
+            at = datetime.now(UTC)
+            fee = await self._price_book.override_for(provider_served_key, SEARCH_FEE_SKU, at=at)
+            if fee is None or fee.per_1k_calls is None:
+                raise PriceMissing(provider_served_key, SEARCH_FEE_SKU)
+
         try:
-            result = await provider.search(query)
+            async with self._limiter.slot(provider.name):
+                result = await provider.search(query)
         except Exception as exc:
             await self._recorder.record(
                 CallRecord(
                     kind=CallKind.SEARCH,
                     ctx=ctx,
                     provider_requested=provider.name,
-                    model_requested=provider.name,
+                    model_requested=model_requested,
                     attempt_index=0,
                     status=CallStatus.ERROR,
                     latency_ms=_elapsed_ms(started),
@@ -377,12 +470,37 @@ class LLMGateway:
                 )
             )
             raise
+
+        details = getattr(result, "usage_details", None)
+        details = dict(details) if isinstance(details, Mapping) else {}
+        cache_read_tokens = _detail_int(details, "cache_read_tokens")
+        reasoning_tokens = _detail_int(details, "reasoning_tokens")
+        cost_usd = result.cost_usd
+        price_version: str = PRICE_VERSION
+        if is_real and fee is not None and at is not None:
+            priced = await price_search_call(
+                self._price_book,
+                provider_requested=provider.name,
+                model_requested=model_requested,
+                provider_served=result.provider,
+                model_served=result.model,
+                usage=TokenUsage(result.input_tokens, result.output_tokens, cache_read_tokens),
+                search_actions=result.search_actions,
+                fee=fee,
+                at=at,
+            )
+            cost_usd, price_version = priced.cost_usd, priced.price_version
+            details["pricing"] = priced.source
+        usage_raw: dict[str, object] = dict(details)
+        usage_raw["search_actions"] = result.search_actions
+        usage_raw["sources"] = len(result.sources)
+        usage_raw["citations"] = len(result.citations)
         await self._recorder.record(
             CallRecord(
                 kind=CallKind.SEARCH,
                 ctx=ctx,
                 provider_requested=provider.name,
-                model_requested=provider.name,
+                model_requested=model_requested,
                 attempt_index=0,
                 status=CallStatus.OK,
                 latency_ms=result.latency_ms or _elapsed_ms(started),
@@ -392,50 +510,78 @@ class LLMGateway:
                 params=params,
                 input_tokens=result.input_tokens,
                 output_tokens=result.output_tokens,
+                cache_read_tokens=cache_read_tokens,
+                reasoning_tokens=reasoning_tokens,
                 search_actions=result.search_actions,
-                cost_usd=result.cost_usd,
-                usage_raw={
-                    "search_actions": result.search_actions,
-                    "sources": len(result.sources),
-                    "citations": len(result.citations),
-                },
+                cost_usd=cost_usd,
+                price_version=price_version,
+                usage_raw=usage_raw,
             )
         )
         return result
 
     async def embed(self, texts: Sequence[str], *, ctx: CallContext) -> list[list[float]]:
-        if not self._settings.mock_mode:
-            raise ProviderNotAvailable("real embeddings are enabled in Phase 2")
-        started = time.perf_counter()
+        if not texts:
+            return []
         choice = parse_choice(self._settings.embedding_model)
         dimensions = self._settings.embedding_dimensions
-        vectors = [mock_embedding(text, dimensions) for text in texts]
-        await self._recorder.record(
-            CallRecord(
-                kind=CallKind.EMBEDDING,
-                ctx=ctx,
-                provider_requested=choice.provider,
-                model_requested=choice.model,
-                attempt_index=0,
-                status=CallStatus.OK,
-                latency_ms=_elapsed_ms(started),
-                provider_served=MOCK_EMBEDDING_PROVIDER,
-                model_served=MOCK_EMBEDDING_MODEL,
-                params={"dimensions": dimensions, "count": len(texts)},
-                input_tokens=sum(len(text.split()) for text in texts),
+        vectors: list[list[float]] = []
+        for batch in batched(texts, EMBED_BATCH_SIZE):
+            await self._check_budget(ctx)
+            if self._embedding_provider is None:
+                raise ProviderNotAvailable(
+                    "no embedding provider is configured (needs GEMINI_API_KEY and a google: embedding model)"
+                )
+            started = time.perf_counter()
+
+            try:
+                async with self._limiter.slot(choice.provider):
+                    result = await self._embedding_provider.embed(batch, dimensions=dimensions)
+            except Exception as exc:
+                await self._recorder.record(
+                    CallRecord(
+                        kind=CallKind.EMBEDDING,
+                        ctx=ctx,
+                        provider_requested=choice.provider,
+                        model_requested=choice.model,
+                        attempt_index=0,
+                        status=CallStatus.ERROR,
+                        latency_ms=_elapsed_ms(started),
+                        params={"dimensions": dimensions, "count": len(batch)},
+                        error_class=type(exc).__name__,
+                        error_message=str(exc),
+                    )
+                )
+                raise
+            priced = await price_embedding_call(
+                self._price_book,
+                provider=choice.provider,
+                model=choice.model,
+                input_tokens=result.input_tokens,
+                at=datetime.now(UTC),
             )
-        )
+            usage_raw: dict[str, object] = dict(result.usage_details)
+            usage_raw["pricing"] = priced.source
+            await self._recorder.record(
+                CallRecord(
+                    kind=CallKind.EMBEDDING,
+                    ctx=ctx,
+                    provider_requested=choice.provider,
+                    model_requested=choice.model,
+                    attempt_index=0,
+                    status=CallStatus.OK,
+                    latency_ms=_elapsed_ms(started),
+                    provider_served=result.provider,
+                    model_served=result.model,
+                    params={"dimensions": dimensions, "count": len(batch)},
+                    input_tokens=result.input_tokens,
+                    cost_usd=priced.cost_usd,
+                    price_version=priced.price_version,
+                    usage_raw=usage_raw,
+                )
+            )
+            vectors.extend(result.vectors)
         return vectors
-
-
-def build_model_factory(settings: Settings) -> ModelFactory:
-    if settings.mock_mode:
-        # imported here because llm.mock imports AgentSpec/ModelFactory from this module
-        from mdcopilot_blog.llm.mock import FixtureRegistry, MockModelFactory
-
-        models.ALLOW_MODEL_REQUESTS = False
-        return MockModelFactory(FixtureRegistry.default())
-    return UnavailableModelFactory()
 
 
 def build_gateway(
@@ -443,11 +589,29 @@ def build_gateway(
     sessionmaker: async_sessionmaker[AsyncSession],
     prompts: PromptRegistry,
 ) -> LLMGateway:
-    search_provider: WebSearchProvider = FixtureSearchProvider() if settings.mock_mode else UnavailableSearchProvider()
+    search_provider: WebSearchProvider
+    embedding_provider: GeminiEmbeddingProvider | None = None
+    try:
+        from mdcopilot_blog.llm.search.openai import OpenAIWebSearchProvider
+
+        search_provider = OpenAIWebSearchProvider(settings)
+    except ProviderNotAvailable:
+        search_provider = UnavailableSearchProvider()
+    try:
+        embedding_provider = GeminiEmbeddingProvider(settings)
+    except ProviderNotAvailable:
+        embedding_provider = None
+    from mdcopilot_blog.llm.pricing import DbPriceBook, ensure_price_updates
+    from mdcopilot_blog.llm.providers import RealModelFactory
+
+    ensure_price_updates(settings)
     return LLMGateway(
         settings=settings,
         prompts=prompts,
         recorder=CallRecorder(sessionmaker),
-        model_factory=build_model_factory(settings),
+        model_factory=RealModelFactory(settings),
         search_provider=search_provider,
+        limiter=process_limiter(settings.provider_concurrency),
+        price_book=DbPriceBook(sessionmaker),
+        embedding_provider=embedding_provider,
     )

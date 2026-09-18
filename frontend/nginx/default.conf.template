@@ -13,11 +13,9 @@ upstream api_upstream {
     keepalive 16;
 }
 
-# Keep the scheme the client used when a TLS-terminating load balancer sits in front.
-map $http_x_forwarded_proto $forwarded_proto {
-    default $http_x_forwarded_proto;
-    ""      $scheme;
-}
+# The public scheme comes from deployment configuration, never an incoming header.
+# Behind a load balancer configure set_real_ip_from for its exact address and
+# real_ip_header X-Forwarded-For only after limiting listener access to that balancer.
 
 server {
     listen 8080;
@@ -70,8 +68,8 @@ server {
         # $http_host keeps the port so FastAPI can compare Origin against Host.
         proxy_set_header Host $http_host;
         proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $forwarded_proto;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto ${PUBLIC_PROXY_SCHEME};
         proxy_set_header X-Forwarded-Host $http_host;
         proxy_connect_timeout 5s;
         proxy_read_timeout 120s;

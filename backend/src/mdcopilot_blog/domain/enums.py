@@ -9,7 +9,7 @@ from enum import StrEnum
 
 
 class Role(StrEnum):
-    """User roles, least to most privileged (ARCHITECTURE §17)."""
+    """User roles, least to most privileged."""
 
     VIEWER = "viewer"
     EDITOR = "editor"
@@ -19,7 +19,7 @@ class Role(StrEnum):
 
 
 class Permission(StrEnum):
-    """Permissions checked by the API (ARCHITECTURE §17)."""
+    """Permissions checked by the API."""
 
     VIEW = "blog.view"
     GENERATE = "blog.generate"
@@ -40,7 +40,7 @@ class RunKind(StrEnum):
 
 
 class RunStatus(StrEnum):
-    """``blog_runs.status`` (ARCHITECTURE §6)."""
+    """``blog_runs.status``."""
 
     QUEUED = "QUEUED"
     RESEARCHING = "RESEARCHING"
@@ -71,7 +71,7 @@ class StepStatus(StrEnum):
 
 
 class ArticleStatus(StrEnum):
-    """``blog_articles.status`` (ARCHITECTURE §6, §6.1)."""
+    """``blog_articles.status``."""
 
     DRAFTING = "DRAFTING"
     FACT_CHECKING = "FACT_CHECKING"
@@ -92,7 +92,7 @@ class ArticleStatus(StrEnum):
 
 
 class PublicationStatus(StrEnum):
-    """``blog_publications.status`` (ARCHITECTURE §6, §14)."""
+    """``blog_publications.status``."""
 
     PENDING = "PENDING"
     EXPORTED = "EXPORTED"
@@ -118,7 +118,7 @@ class CallStatus(StrEnum):
 
 
 class AgentName(StrEnum):
-    """Route keys for the LLM gateway; ``HELLO`` is the Phase 1 mock agent."""
+    """Route keys for the LLM gateway."""
 
     SEARCH = "search"
     RESEARCH = "research"
@@ -129,7 +129,6 @@ class AgentName(StrEnum):
     CLINICAL = "clinical"
     EDITORIAL = "editorial"
     SEO = "seo"
-    HELLO = "hello"
 
 
 class CandidateStatus(StrEnum):
@@ -213,16 +212,6 @@ class FeedKind(StrEnum):
     FDA_AI_DEVICES_CSV = "fda_ai_devices_csv"
 
 
-class ReviewKind(StrEnum):
-    """``blog_reviews.kind``."""
-
-    FACT_CHECK = "fact_check"
-    CLINICAL = "clinical"
-    EDITORIAL = "editorial"
-    QUALITY_GATE = "quality_gate"
-    HUMAN = "human"
-
-
 class ReviewVerdict(StrEnum):
     """``blog_reviews.verdict``."""
 
@@ -303,25 +292,6 @@ class PublisherKey(StrEnum):
 
     MANUAL_EXPORT = "manual_export"
     MDCOPILOT_API = "mdcopilot_api"
-    NULL = "null"
-
-
-class SlotStatus(StrEnum):
-    """``blog_calendar_slots.status``."""
-
-    PLANNED = "planned"
-    CANCELLED = "cancelled"
-
-
-class NotificationKind(StrEnum):
-    """``blog_notifications.kind``."""
-
-    READY_FOR_REVIEW = "ready_for_review"
-    QUALITY_GATE_FAILED = "quality_gate_failed"
-    RUN_FAILED = "run_failed"
-    PUBLISH_FAILED = "publish_failed"
-    SCHEDULED_EXPORT_DUE = "scheduled_export_due"
-    DAILY_RUN_SKIPPED = "daily_run_skipped"
 
 
 class HeadlinePattern(StrEnum):

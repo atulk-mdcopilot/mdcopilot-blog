@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Protocol
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 from dbos import DBOSClient, EnqueueOptions, WorkflowHandleAsync
 
@@ -23,37 +23,14 @@ class StepView:
     error: str | None
 
 
-class WorkflowClientProtocol(Protocol):
-    async def enqueue(
-        self,
-        *,
-        workflow_name: str,
-        queue_name: str,
-        workflow_id: str,
-        args: tuple[object, ...],
-        timeout_seconds: float | None,
-    ) -> str: ...
-
-    async def cancel(self, workflow_id: str) -> None: ...
-
-    async def list_steps(self, workflow_id: str) -> list[StepView]: ...
-
-    async def status(self, workflow_id: str) -> str | None: ...
-
-    async def fork_from_step(self, workflow_id: str, step_name: str, *, queue_name: str) -> str: ...
-
-    def close(self) -> None: ...
+@dataclass(frozen=True)
+class WorkflowDescription:
+    status: str
+    app_version: str | None
+    name: str
 
 
-def _latest_function_id(steps: list[StepView], workflow_id: str, step_name: str) -> int:
-    """A step name can repeat (loops, retries); fork from its most recent execution."""
-    ids = [step.function_id for step in steps if step.function_name == step_name]
-    if not ids:
-        raise LookupError(f"step {step_name!r} not found in workflow {workflow_id!r}")
-    return max(ids)
-
-
-class WorkflowClient(WorkflowClientProtocol):
+class WorkflowClient:
     """Async wrapper over DBOSClient. Only *_async client methods are used, so the event loop never blocks."""
 
     def __init__(self, client: DBOSClient, app_version: str) -> None:
@@ -112,80 +89,21 @@ class WorkflowClient(WorkflowClientProtocol):
         rows = await self._client.list_workflows_async(workflow_ids=[workflow_id], load_input=False, load_output=False)
         return rows[0].status if rows else None
 
-    async def fork_from_step(self, workflow_id: str, step_name: str, *, queue_name: str) -> str:
-        steps = await self._client.list_workflow_steps_async(workflow_id, load_output=False)
-        views = [StepView(step["function_id"], step["function_name"], None, None, None) for step in steps]
-        start_step = _latest_function_id(views, workflow_id, step_name)
+    async def describe(self, workflow_id: str) -> WorkflowDescription | None:
+        rows = await self._client.list_workflows_async(workflow_ids=[workflow_id], load_input=False, load_output=False)
+        return WorkflowDescription(rows[0].status, rows[0].app_version, rows[0].name) if rows else None
+
+    async def fork_from_function_id(
+        self, workflow_id: str, start_step: int, *, queue_name: str, timeout_seconds: float | None
+    ) -> str:
         handle = await self._client.fork_workflow_async(
-            workflow_id, start_step, application_version=self._app_version, queue_name=queue_name
+            workflow_id,
+            start_step,
+            application_version=self._app_version,
+            queue_name=queue_name,
+            timeout_seconds=timeout_seconds,
         )
         return handle.get_workflow_id()
 
     def close(self) -> None:
         self._client.destroy()
-
-
-@dataclass(frozen=True)
-class EnqueueCall:
-    workflow_name: str
-    queue_name: str
-    workflow_id: str
-    args: tuple[object, ...]
-    timeout_seconds: float | None
-
-
-@dataclass(frozen=True)
-class ForkCall:
-    workflow_id: str
-    step_name: str
-    start_step: int
-    queue_name: str
-    new_workflow_id: str
-
-
-@dataclass
-class FakeWorkflowClient(WorkflowClientProtocol):
-    """In-memory stand-in for API tests. Records every call; ids are deterministic."""
-
-    enqueued: list[EnqueueCall] = field(default_factory=list)
-    cancelled: list[str] = field(default_factory=list)
-    forked: list[ForkCall] = field(default_factory=list)
-    statuses: dict[str, str] = field(default_factory=dict)
-    steps: dict[str, list[StepView]] = field(default_factory=dict)
-    enqueue_error: Exception | None = None
-    closed: bool = False
-
-    async def enqueue(
-        self,
-        *,
-        workflow_name: str,
-        queue_name: str,
-        workflow_id: str,
-        args: tuple[object, ...],
-        timeout_seconds: float | None,
-    ) -> str:
-        if self.enqueue_error is not None:
-            raise self.enqueue_error
-        self.enqueued.append(EnqueueCall(workflow_name, queue_name, workflow_id, tuple(args), timeout_seconds))
-        self.statuses.setdefault(workflow_id, "ENQUEUED")
-        return workflow_id
-
-    async def cancel(self, workflow_id: str) -> None:
-        self.cancelled.append(workflow_id)
-        self.statuses[workflow_id] = "CANCELLED"
-
-    async def list_steps(self, workflow_id: str) -> list[StepView]:
-        return list(self.steps.get(workflow_id, []))
-
-    async def status(self, workflow_id: str) -> str | None:
-        return self.statuses.get(workflow_id)
-
-    async def fork_from_step(self, workflow_id: str, step_name: str, *, queue_name: str) -> str:
-        start_step = _latest_function_id(self.steps.get(workflow_id, []), workflow_id, step_name)
-        new_workflow_id = f"{workflow_id}-fork-{len(self.forked) + 1}"
-        self.forked.append(ForkCall(workflow_id, step_name, start_step, queue_name, new_workflow_id))
-        self.statuses[new_workflow_id] = "ENQUEUED"
-        return new_workflow_id
-
-    def close(self) -> None:
-        self.closed = True

@@ -7,10 +7,6 @@ export function setCsrfToken(token: string | null): void {
   csrfToken = token
 }
 
-export function getCsrfToken(): string | null {
-  return csrfToken
-}
-
 export class ApiError extends Error {
   readonly status: number
   readonly body: unknown
@@ -25,9 +21,10 @@ export class ApiError extends Error {
 
 const UNSAFE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 
-export type ApiRequestInit = Omit<RequestInit, 'body'> & {
+type ApiRequestInit = Omit<RequestInit, 'body'> & {
   body?: BodyInit | null
   json?: unknown
+  passive?: boolean
 }
 
 // The backend sends errors as application/problem+json, so accept any JSON media type.
@@ -40,10 +37,11 @@ function isJsonContentType(value: string | null): boolean {
 }
 
 export async function apiFetch<T>(path: string, init: ApiRequestInit = {}): Promise<T> {
-  const { json, headers: initHeaders, body: initBody, method: initMethod, ...rest } = init
+  const { json, passive, headers: initHeaders, body: initBody, method: initMethod, ...rest } = init
   const method = (initMethod ?? 'GET').toUpperCase()
   const headers = new Headers(initHeaders)
   headers.set('Accept', 'application/json')
+  if (passive && method === 'GET') headers.set('X-Session-Activity', 'passive')
 
   let body = initBody
   if (json !== undefined) {
@@ -68,6 +66,10 @@ export async function apiFetch<T>(path: string, init: ApiRequestInit = {}): Prom
   const data: unknown = text && isJson ? JSON.parse(text) : text || undefined
 
   if (!response.ok) {
+    if (response.status === 401 && path !== '/api/auth/login') {
+      setCsrfToken(null)
+      window.dispatchEvent(new Event('mdcb:session-expired'))
+    }
     throw new ApiError(response.status, data)
   }
   return data as T

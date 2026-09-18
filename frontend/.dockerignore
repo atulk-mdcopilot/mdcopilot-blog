@@ -1,7 +1,5 @@
 node_modules
 dist
-.vitest
-coverage
 *.local
 .env
 .env.*

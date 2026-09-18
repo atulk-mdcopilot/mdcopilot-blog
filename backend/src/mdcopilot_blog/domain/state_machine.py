@@ -1,4 +1,4 @@
-"""Status transition tables for runs, articles and publications (ARCHITECTURE §6).
+"""Status transition tables for runs, articles and publications.
 
 The API and the workflows both call ``require_transition`` before writing a status.
 Moving to the state an entity is already in is always allowed and changes nothing, so a retried

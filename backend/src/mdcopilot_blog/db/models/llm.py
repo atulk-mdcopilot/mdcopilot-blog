@@ -20,6 +20,8 @@ class LlmCall(UUIDPk, CreatedAt, Base):
     __table_args__ = (
         Index("ix_blog_llm_calls_provider_model", "provider_requested", "model_requested"),
         Index("ix_blog_llm_calls_created_at", "created_at"),
+        Index("ix_blog_llm_calls_article_id", "article_id"),
+        Index("ix_blog_llm_calls_topic_candidate_id", "topic_candidate_id"),
     )
 
     run_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("blog_runs.id", ondelete="SET NULL"), index=True)

@@ -4,7 +4,7 @@ schedule:
   time: "07:00"
   timezone: Asia/Kolkata
 novelty_threshold: 0.85
-# Topic scoring weights (ARCHITECTURE section 9); they sum to 1.0
+# Topic scoring weights; they sum to 1.0
 score_weights:
   timeliness: 0.25
   novelty: 0.20
@@ -12,5 +12,5 @@ score_weights:
   mdcopilot_relevance: 0.15
   audience: 0.10
   editorial: 0.10
-# Who may approve a version whose quality gates failed (owner decision pending, ARCHITECTURE 24.2)
+# Administrators may approve failed quality gates only with a reason.
 gate_override_policy: admin_with_reason

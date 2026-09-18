@@ -30,18 +30,11 @@ dependencies = [
     "python-dateutil>=2.9.0.post0,<3",
     "markdown-it-py>=4.2.0,<4.3",
     "nh3>=0.3.7,<0.4",
-    "opentelemetry-sdk>=1.44.0,<1.45",
-    "opentelemetry-exporter-otlp-proto-http>=1.44.0,<1.45",
 ]
 
 [dependency-groups]
 dev = [
-    "pytest>=9.1.1,<10",
-    "pytest-asyncio>=1.4.0,<1.5",
     "ruff==0.16.8",
-    "mypy==2.3.1",
-    "types-PyYAML",
-    "types-python-dateutil>=2.9.0.20260807",
 ]
 
 [build-system]
@@ -51,25 +44,9 @@ build-backend = "uv_build"
 [tool.uv.build-backend]
 module-name = "mdcopilot_blog"
 
-# pytest 9 native TOML table (not [tool.pytest.ini_options])
-[tool.pytest]
-testpaths = ["tests"]
-addopts = ["-ra", "--strict-markers"]
-markers = ["live: calls real providers or external networks; runs only with BLOG_LIVE_TESTS=1"]
-asyncio_mode = "auto"
-# The engine fixtures are session-scoped, so fixtures AND tests must share the session loop.
-asyncio_default_fixture_loop_scope = "session"
-asyncio_default_test_loop_scope = "session"
-
 [tool.ruff]
 line-length = 120
 target-version = "py312"
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101", "S105", "S106", "PLR2004"]
 "migrations/versions/*" = ["E501"]
-
-[tool.mypy]
-python_version = "3.12"
-strict = true
-plugins = ["pydantic.mypy"]

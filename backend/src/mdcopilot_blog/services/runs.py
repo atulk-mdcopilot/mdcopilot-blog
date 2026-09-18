@@ -21,8 +21,8 @@ from mdcopilot_blog.errors import ProblemError
 from mdcopilot_blog.ids import new_trace_id
 from mdcopilot_blog.services.audit import audit
 from mdcopilot_blog.settings import Settings
-from mdcopilot_blog.workflows.client import WorkflowClientProtocol
-from mdcopilot_blog.workflows.names import QUEUE_PIPELINE, WORKFLOW_HELLO
+from mdcopilot_blog.workflows.client import WorkflowClient
+from mdcopilot_blog.workflows.names import QUEUE_PIPELINE, WORKFLOW_DISCOVER_TOPICS
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +44,7 @@ def initial_workflow_id(run: BlogRun) -> str:
 
 async def create_manual_run(
     db: AsyncSession,
-    client: WorkflowClientProtocol,
+    client: WorkflowClient,
     *,
     principal: Principal,
     request: ManualRunRequest,
@@ -77,11 +77,11 @@ async def create_manual_run(
 
     try:
         await client.enqueue(
-            workflow_name=WORKFLOW_HELLO,
+            workflow_name=WORKFLOW_DISCOVER_TOPICS,
             queue_name=QUEUE_PIPELINE,
             workflow_id=workflow_id,
             args=(str(run.id),),
-            timeout_seconds=settings.production_timeout_minutes * 60,
+            timeout_seconds=settings.discovery_timeout_minutes * 60,
         )
     except Exception as exc:
         logger.exception("enqueue failed", extra={"run_id": str(run.id), "workflow_id": workflow_id})
@@ -123,9 +123,7 @@ async def get_run_detail(
     return run, list(attempts.all()), list(steps.all())
 
 
-async def cancel_run(
-    db: AsyncSession, client: WorkflowClientProtocol, *, run: BlogRun, principal: Principal
-) -> BlogRun:
+async def cancel_run(db: AsyncSession, client: WorkflowClient, *, run: BlogRun, principal: Principal) -> BlogRun:
     if run.status == RunStatus.CANCELLED.value:
         # Same-state transition: a no-op under the state machine rules. Nothing is left to cancel.
         return run

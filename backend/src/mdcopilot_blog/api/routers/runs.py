@@ -6,13 +6,15 @@ from typing import Annotated
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Body, Depends, Query
+from sqlalchemy import select
 
 from mdcopilot_blog.api.deps import Principal, SessionDep, SettingsDep, WorkflowClientDep, require_permission
 from mdcopilot_blog.api.schemas import AttemptOut, ManualRunRequest, Page, RunDetail, RunOut, StepOut
-from mdcopilot_blog.db.models import BlogRun
+from mdcopilot_blog.db.models import Article, BlogRun, ResearchRun
 from mdcopilot_blog.domain.enums import Permission, RunStatus
 from mdcopilot_blog.domain.state_machine import InvalidTransition
 from mdcopilot_blog.errors import ProblemError
+from mdcopilot_blog.services import run_controls
 from mdcopilot_blog.services.runs import cancel_run, create_manual_run, get_run_detail, list_runs
 
 DEFAULT_PAGE_SIZE = 20
@@ -22,6 +24,7 @@ router = APIRouter(tags=["runs"])
 
 CanView = Annotated[Principal, Depends(require_permission(Permission.VIEW))]
 CanGenerate = Annotated[Principal, Depends(require_permission(Permission.GENERATE))]
+CanManage = Annotated[Principal, Depends(require_permission(Permission.AGENT_RUNS))]
 
 
 def run_not_found(run_id: uuid.UUID) -> ProblemError:
@@ -71,12 +74,25 @@ async def get_run(run_id: uuid.UUID, db: SessionDep, _: CanView) -> RunDetail:
         params=run.params,
         attempts=[AttemptOut.model_validate(attempt) for attempt in attempts],
         steps=[StepOut.model_validate(step) for step in steps],
+        error=run.error,
+        article_ids=list(
+            await db.scalars(
+                select(Article.id).where(Article.run_id == run_id).order_by(Article.created_at, Article.id)
+            )
+        ),
+        research_run_ids=list(
+            await db.scalars(
+                select(ResearchRun.id)
+                .where(ResearchRun.run_id == run_id)
+                .order_by(ResearchRun.started_at, ResearchRun.id)
+            )
+        ),
     )
 
 
 @router.post("/runs/{run_id}/cancel", status_code=202)
 async def cancel(run_id: uuid.UUID, db: SessionDep, client: WorkflowClientDep, principal: CanGenerate) -> RunOut:
-    # Row lock, the same one Task 11's set_run_status takes: cancels and worker status writes serialise.
+    # Row lock, the same one set_run_status takes: cancels and worker status writes serialise.
     run = await db.get(BlogRun, run_id, with_for_update=True)
     if run is None:
         raise run_not_found(run_id)
@@ -85,3 +101,76 @@ async def cancel(run_id: uuid.UUID, db: SessionDep, client: WorkflowClientDep, p
     except InvalidTransition as exc:
         raise ProblemError(409, "Run cannot be cancelled", f"run is {exc.current}") from exc
     return to_run_out(cancelled)
+
+
+async def _locked_run(db: SessionDep, run_id: uuid.UUID) -> BlogRun:
+    run = await db.get(BlogRun, run_id, with_for_update=True)
+    if run is None:
+        raise run_not_found(run_id)
+    return run
+
+
+@router.post("/runs/{run_id}/restart", status_code=202, response_model=RunOut)
+async def restart(
+    run_id: uuid.UUID, db: SessionDep, client: WorkflowClientDep, settings: SettingsDep, principal: CanManage
+) -> RunOut:
+    return to_run_out(
+        await run_controls.restart_run(
+            db, client, run=await _locked_run(db, run_id), settings=settings, principal=principal
+        )
+    )
+
+
+@router.post("/runs/{run_id}/resume", status_code=202, response_model=RunOut)
+async def resume(
+    run_id: uuid.UUID, db: SessionDep, client: WorkflowClientDep, settings: SettingsDep, principal: CanManage
+) -> RunOut:
+    return to_run_out(
+        await run_controls.resume_run(
+            db, client, run=await _locked_run(db, run_id), settings=settings, principal=principal
+        )
+    )
+
+
+@router.post("/runs/{run_id}/steps/{step_name}/retry", status_code=202, response_model=RunOut)
+async def retry_step(
+    run_id: uuid.UUID,
+    step_name: str,
+    db: SessionDep,
+    client: WorkflowClientDep,
+    settings: SettingsDep,
+    principal: CanManage,
+) -> RunOut:
+    return to_run_out(
+        await run_controls.fork_step(
+            db,
+            client,
+            run=await _locked_run(db, run_id),
+            settings=settings,
+            principal=principal,
+            step_name=step_name,
+            retry=True,
+        )
+    )
+
+
+@router.post("/runs/{run_id}/steps/{step_name}/restart", status_code=202, response_model=RunOut)
+async def restart_step(
+    run_id: uuid.UUID,
+    step_name: str,
+    db: SessionDep,
+    client: WorkflowClientDep,
+    settings: SettingsDep,
+    principal: CanManage,
+) -> RunOut:
+    return to_run_out(
+        await run_controls.fork_step(
+            db,
+            client,
+            run=await _locked_run(db, run_id),
+            settings=settings,
+            principal=principal,
+            step_name=step_name,
+            retry=False,
+        )
+    )

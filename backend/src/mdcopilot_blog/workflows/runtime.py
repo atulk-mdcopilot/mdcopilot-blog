@@ -1,7 +1,7 @@
 """Process-wide dependencies for workflow steps.
 
 DBOS steps receive only serialisable arguments, so engine, sessionmaker, prompt registry and gateway
-live in one module-level WorkerRuntime that the worker (or the test fixture) sets before DBOS.launch().
+live in one module-level WorkerRuntime that the worker sets before DBOS.launch().
 """
 
 from dataclasses import dataclass

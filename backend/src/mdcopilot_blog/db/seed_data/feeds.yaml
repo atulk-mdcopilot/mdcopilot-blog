@@ -1,0 +1,320 @@
+# Research source feeds. Verified 2026-09-17.
+# Edits after seeding happen in the Sources page; seeding never updates existing rows.
+feeds:
+  - name: FDA press releases
+    url: https://www.fda.gov/about-fda/contact-fda/stay-informed/rss-feeds/press-releases/rss.xml
+    kind: rss
+    group: fda
+    tier: 1
+    source_type: government
+    pillar_keys: [E, D]
+    theme_keys: [regulation, healthcare_ai]
+
+  - name: FDA MedWatch safety alerts
+    url: https://www.fda.gov/about-fda/contact-fda/stay-informed/rss-feeds/medwatch/rss.xml
+    kind: rss
+    group: fda
+    tier: 1
+    source_type: government
+    pillar_keys: [E]
+    theme_keys: [regulation]
+
+  - name: FDA drugs
+    url: https://www.fda.gov/about-fda/contact-fda/stay-informed/rss-feeds/drugs/rss.xml
+    kind: rss
+    group: fda
+    tier: 1
+    source_type: government
+    pillar_keys: [E]
+    theme_keys: [regulation]
+
+  - name: FDA biologics
+    url: https://www.fda.gov/about-fda/contact-fda/stay-informed/rss-feeds/biologics/rss.xml
+    kind: rss
+    group: fda
+    tier: 1
+    source_type: government
+    pillar_keys: [E]
+    theme_keys: [regulation]
+
+  - name: FDA recalls
+    url: https://www.fda.gov/about-fda/contact-fda/stay-informed/rss-feeds/recalls/rss.xml
+    kind: rss
+    group: fda
+    tier: 1
+    source_type: government
+    pillar_keys: [E]
+    theme_keys: [regulation]
+
+  - name: FDA AI-enabled medical devices list
+    url: https://www.fda.gov/media/178541/download?attachment
+    kind: fda_ai_devices_csv
+    group: fda
+    tier: 1
+    source_type: government
+    pillar_keys: [E, D]
+    theme_keys: [regulation, healthcare_ai]
+
+  - name: CMS newsroom
+    url: https://www.cms.gov/newsroom/rss-feeds
+    kind: rss
+    group: cms
+    tier: 1
+    source_type: government
+    pillar_keys: [A, C, E]
+    theme_keys: [regulation, access_problems, administrative_overload]
+    quirks:
+      link_from_title_href: true
+      date_path: "time@datetime"
+
+  - name: "Federal Register: FDA and CMS documents"
+    url: https://www.federalregister.gov/api/v1/documents.json#fda-cms
+    kind: federal_register
+    group: federal_register
+    tier: 1
+    source_type: government
+    pillar_keys: [E]
+    theme_keys: [regulation]
+    quirks:
+      query_params:
+        conditions[agencies][]: food-and-drug-administration,centers-for-medicare-medicaid-services
+        order: newest
+        per_page: "20"
+
+  - name: HHS news
+    url: https://www.hhs.gov/rss/news.xml
+    kind: rss
+    group: hhs
+    tier: 1
+    source_type: government
+    pillar_keys: [A, E]
+    theme_keys: [regulation, access_problems]
+    header_profile: browser_like
+
+  - name: CDC newsroom
+    url: https://tools.cdc.gov/api/v2/resources/media/132608.rss?max=20
+    kind: rss
+    group: cdc
+    tier: 1
+    source_type: government
+    pillar_keys: [A]
+    theme_keys: [access_problems, workforce_trends]
+
+  - name: ASTP/ONC Health IT Buzz
+    url: https://healthit.gov/blog/feed/
+    kind: rss
+    group: onc
+    tier: 1
+    source_type: government
+    pillar_keys: [E, D]
+    theme_keys: [regulation, healthcare_ai]
+
+  - name: AMA news
+    url: https://www.ama-assn.org/rss.xml
+    kind: rss
+    group: ama
+    tier: 1
+    source_type: other
+    pillar_keys: [C, A]
+    theme_keys: [burnout, administrative_overload, physician_workflow, workforce_trends]
+
+  - name: "PubMed: AI in clinical practice"
+    url: https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi#ai-clinical-practice
+    kind: pubmed
+    group: pubmed
+    tier: 1
+    source_type: journal
+    pillar_keys: [B, D]
+    theme_keys: [clinical_ai_research, clinical_reasoning_systems]
+    quirks:
+      query_params:
+        term: '("artificial intelligence"[tiab] OR "machine learning"[tiab] OR "large language model"[tiab]) AND (physician[tiab] OR clinician[tiab] OR specialist[tiab])'
+        retmax: "20"
+        sort: pub_date
+
+  - name: "PubMed: physician burnout and workload"
+    url: https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi#burnout-workload
+    kind: pubmed
+    group: pubmed
+    tier: 1
+    source_type: journal
+    pillar_keys: [C]
+    theme_keys: [burnout, administrative_overload]
+    quirks:
+      query_params:
+        term: '(burnout[tiab] OR "administrative burden"[tiab] OR "documentation burden"[tiab]) AND (physician[tiab] OR clinician[tiab])'
+        retmax: "20"
+        sort: pub_date
+
+  - name: JAMA
+    url: https://jamanetwork.com/rss/site_3/67.xml
+    kind: rss
+    group: journals
+    tier: 1
+    source_type: journal
+    pillar_keys: [B]
+    theme_keys: [clinical_ai_research]
+    quirks:
+      resolve_to: pubmed
+
+  - name: JAMA online first
+    url: https://jamanetwork.com/rss/site_3/onlineFirst_67.xml
+    kind: rss
+    group: journals
+    tier: 1
+    source_type: journal
+    pillar_keys: [B]
+    theme_keys: [clinical_ai_research]
+    quirks:
+      resolve_to: pubmed
+
+  - name: Lancet Digital Health
+    url: https://www.thelancet.com/rssfeed/landig_online.xml
+    kind: rss
+    group: journals
+    tier: 1
+    source_type: journal
+    pillar_keys: [B]
+    theme_keys: [clinical_ai_research]
+    header_profile: browser_like
+    quirks:
+      resolve_to: pubmed
+    is_enabled: false  # 403 to both profiles on 2026-09-17
+
+  - name: npj Digital Medicine
+    url: https://www.nature.com/npjdigitalmed.rss
+    kind: rss
+    group: journals
+    tier: 1
+    source_type: journal
+    pillar_keys: [B, D]
+    theme_keys: [clinical_ai_research, digital_twins]
+    header_profile: browser_like
+    quirks:
+      resolve_to: pubmed
+
+  - name: NEJM AI
+    url: https://ai.nejm.org/action/showFeed?jc=ai&type=etoc&feed=rss
+    kind: rss
+    group: journals
+    tier: 1
+    source_type: journal
+    pillar_keys: [B]
+    theme_keys: [clinical_ai_research]
+    quirks:
+      resolve_to: pubmed
+    is_enabled: false  # 403 to both profiles on 2026-09-17
+
+  - name: medRxiv Health Informatics
+    url: https://connect.medrxiv.org/medrxiv_xml.php?subject=Health_Informatics
+    kind: rss
+    group: preprints
+    tier: 2
+    source_type: preprint
+    pillar_keys: [B, D]
+    theme_keys: [clinical_ai_research]
+    quirks:
+      resolve_to: doi
+    is_preprint: true
+
+  - name: arXiv cs.AI
+    url: https://rss.arxiv.org/rss/cs.AI
+    kind: rss
+    group: preprints
+    tier: 2
+    source_type: preprint
+    pillar_keys: [D]
+    theme_keys: [ai_model_developments, agentic_ai]
+    is_preprint: true
+
+  - name: STAT
+    url: https://www.statnews.com/feed/
+    kind: rss
+    group: trade_press
+    tier: 2
+    source_type: trade_press
+    pillar_keys: [A, C, E]
+    theme_keys: [healthcare_ai, workforce_trends]
+
+  - name: STAT health tech
+    url: https://www.statnews.com/category/health-tech/feed/
+    kind: rss
+    group: trade_press
+    tier: 2
+    source_type: trade_press
+    pillar_keys: [B, D]
+    theme_keys: [healthcare_ai, automation]
+
+  - name: Fierce Healthcare
+    url: https://www.fiercehealthcare.com/rss/xml
+    kind: rss
+    group: trade_press
+    tier: 2
+    source_type: trade_press
+    pillar_keys: [A, C]
+    theme_keys: [healthcare_ai, workforce_trends]
+    quirks:
+      date_parser: dateutil
+
+  - name: MedCity News
+    url: https://medcitynews.com/feed/
+    kind: rss
+    group: trade_press
+    tier: 2
+    source_type: trade_press
+    pillar_keys: [D]
+    theme_keys: [healthcare_ai, automation]
+
+  - name: Becker's Hospital Review
+    url: https://www.beckershospitalreview.com/feed/
+    kind: rss
+    group: trade_press
+    tier: 2
+    source_type: trade_press
+    pillar_keys: [C, D]
+    theme_keys: [healthcare_ai, workforce_trends, automation]
+
+  - name: OpenAI news
+    url: https://openai.com/news/rss.xml
+    kind: rss
+    group: ai_labs
+    tier: 1
+    source_type: company_announcement
+    pillar_keys: [D]
+    theme_keys: [ai_news, ai_model_developments]
+
+  - name: Google AI blog
+    url: https://blog.google/innovation-and-ai/technology/ai/rss/
+    kind: rss
+    group: ai_labs
+    tier: 1
+    source_type: company_announcement
+    pillar_keys: [D]
+    theme_keys: [ai_news, ai_model_developments]
+
+  - name: Google health blog
+    url: https://blog.google/innovation-and-ai/technology/health/rss/
+    kind: rss
+    group: ai_labs
+    tier: 1
+    source_type: company_announcement
+    pillar_keys: [D, B]
+    theme_keys: [healthcare_ai]
+
+  - name: Google Research blog
+    url: https://research.google/blog/rss/
+    kind: rss
+    group: ai_labs
+    tier: 1
+    source_type: company_announcement
+    pillar_keys: [D, B]
+    theme_keys: [ai_model_developments, clinical_ai_research]
+
+  - name: Google DeepMind blog
+    url: https://deepmind.google/blog/rss.xml
+    kind: rss
+    group: ai_labs
+    tier: 1
+    source_type: company_announcement
+    pillar_keys: [D]
+    theme_keys: [ai_model_developments, agentic_ai]

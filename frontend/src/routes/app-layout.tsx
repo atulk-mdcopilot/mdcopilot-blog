@@ -1,8 +1,6 @@
-import { type ReactNode, useState } from 'react'
+import { type ReactNode, useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  ActivityIcon,
-  CalendarDaysIcon,
   ClipboardCheckIcon,
   FileTextIcon,
   FlaskConicalIcon,
@@ -12,7 +10,6 @@ import {
   MenuIcon,
   SendIcon,
   SettingsIcon,
-  TagsIcon,
 } from 'lucide-react'
 import { NavLink, Outlet, useNavigate } from 'react-router'
 import { Button } from '@/components/ui/button'
@@ -35,22 +32,19 @@ import {
 import { Skeleton } from '@/components/ui/skeleton'
 import { type NavItem, visibleNavItems } from '@/app/nav'
 import { logout, sessionQueryOptions } from '@/features/auth/session'
-import { cn } from '@/lib/utils'
+import { cn } from 'cn'
 
 const ICON_CLASS = 'size-4'
 
 const NAV_ICONS: Record<string, ReactNode> = {
   '/': <LayoutDashboardIcon className={ICON_CLASS} aria-hidden="true" />,
-  '/ideas': <LightbulbIcon className={ICON_CLASS} aria-hidden="true" />,
+  '/topics': <LightbulbIcon className={ICON_CLASS} aria-hidden="true" />,
   '/research': <FlaskConicalIcon className={ICON_CLASS} aria-hidden="true" />,
   '/drafts': <FileTextIcon className={ICON_CLASS} aria-hidden="true" />,
   '/review': <ClipboardCheckIcon className={ICON_CLASS} aria-hidden="true" />,
   '/published': <SendIcon className={ICON_CLASS} aria-hidden="true" />,
-  '/topics': <TagsIcon className={ICON_CLASS} aria-hidden="true" />,
-  '/calendar': <CalendarDaysIcon className={ICON_CLASS} aria-hidden="true" />,
   '/sources': <LibraryIcon className={ICON_CLASS} aria-hidden="true" />,
   '/settings': <SettingsIcon className={ICON_CLASS} aria-hidden="true" />,
-  '/agent-runs': <ActivityIcon className={ICON_CLASS} aria-hidden="true" />,
 }
 
 type NavListProps = {
@@ -91,6 +85,18 @@ export function AppLayout() {
   const { data: session } = useQuery(sessionQueryOptions)
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const items = visibleNavItems(session?.user)
+  useEffect(() => {
+    let redirected = false
+    const expire = () => {
+      if (redirected) return
+      redirected = true
+      const next = window.location.pathname + window.location.search
+      queryClient.clear()
+      void navigate(`/login?next=${encodeURIComponent(next)}`, { replace: true })
+    }
+    window.addEventListener('mdcb:session-expired', expire)
+    return () => window.removeEventListener('mdcb:session-expired', expire)
+  }, [navigate, queryClient])
 
   async function handleLogout() {
     try {
@@ -124,23 +130,25 @@ export function AppLayout() {
           </Sheet>
           <span className="font-heading font-semibold">MDCopilot Blog</span>
         </div>
-        {session ? (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline">{session.user.displayName}</Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-56">
-              <DropdownMenuLabel className="flex flex-col gap-0.5">
-                <span className="truncate text-foreground">{session.user.email}</span>
-                <span className="capitalize">{session.user.role}</span>
-              </DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onSelect={() => void handleLogout()}>Sign out</DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        ) : (
-          <Skeleton className="h-8 w-32" />
-        )}
+        <div className="flex items-center gap-2">
+          {session ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline">{session.user.displayName}</Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-56">
+                <DropdownMenuLabel className="flex flex-col gap-0.5">
+                  <span className="truncate text-foreground">{session.user.email}</span>
+                  <span className="capitalize">{session.user.role}</span>
+                </DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onSelect={() => void handleLogout()}>Sign out</DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : (
+            <Skeleton className="h-8 w-32" />
+          )}
+        </div>
       </header>
       <div className="flex flex-1">
         <aside className="hidden w-60 shrink-0 border-r bg-sidebar p-3 md:block">

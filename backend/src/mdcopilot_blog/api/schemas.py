@@ -5,10 +5,9 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from pydantic.alias_generators import to_camel
 
-from mdcopilot_blog.auth.users import MIN_PASSWORD_LENGTH
 from mdcopilot_blog.domain.contracts import PillarKey
 from mdcopilot_blog.domain.enums import AttemptStatus, Permission, Role, RunKind, RunStatus, StepStatus
 
@@ -26,14 +25,6 @@ class ApiModel(BaseModel):
         extra="forbid",
         from_attributes=True,
     )
-
-
-def _email(value: str) -> str:
-    normalized = value.strip().lower()
-    local, _, domain = normalized.partition("@")
-    if not local or not domain or "@" in domain or any(ch.isspace() for ch in normalized):
-        raise ValueError("must be an email address")
-    return normalized
 
 
 # --- auth ---
@@ -57,45 +48,6 @@ class SessionResponse(ApiModel):
     csrf_token: str
 
 
-# --- users ---
-
-
-class UserOut(ApiModel):
-    id: uuid.UUID
-    email: str
-    display_name: str
-    role: Role
-    is_active: bool
-    last_login_at: datetime | None
-    created_at: datetime
-
-
-class UserCreate(ApiModel):
-    email: str = Field(min_length=3, max_length=MAX_EMAIL_LENGTH)
-    display_name: str = Field(min_length=1, max_length=200)
-    role: Role
-    password: str = Field(min_length=MIN_PASSWORD_LENGTH, max_length=MAX_PASSWORD_LENGTH)
-
-    @field_validator("email")
-    @classmethod
-    def _check_email(cls, value: str) -> str:
-        return _email(value)
-
-    @field_validator("display_name")
-    @classmethod
-    def _check_display_name(cls, value: str) -> str:
-        stripped = value.strip()
-        if not stripped:
-            raise ValueError("must not be blank")
-        return stripped
-
-
-class UserUpdate(ApiModel):
-    role: Role | None = None
-    is_active: bool | None = None
-    password: str | None = Field(None, min_length=MIN_PASSWORD_LENGTH, max_length=MAX_PASSWORD_LENGTH)
-
-
 # --- settings ---
 
 
@@ -106,11 +58,9 @@ class ProviderKeyView(ApiModel):
 
 class SettingsView(ApiModel):
     app_version: str
-    mock_mode: bool
     agent_enabled: bool
     scheduler_enabled: bool
     publishing_enabled: bool
-    gemini_grounding_enabled: bool
     human_approval_required: bool
     schedule: dict[str, str]
     routes: dict[str, list[str]]
@@ -129,15 +79,15 @@ def mask_secret(value: SecretStr | None) -> ProviderKeyView:
     return ProviderKeyView(configured=True, preview="set")
 
 
-# --- runs (served by Task 12) ---
+# --- runs ---
 
 
 class ManualRunRequest(ApiModel):
     run_date: date | None = None
     pillar: PillarKey | None = None
     topic: str | None = Field(None, max_length=300)
-    audience: str | None = None
-    tone: str | None = None
+    audience: str | None = Field(None, max_length=300)
+    tone: str | None = Field(None, max_length=300)
     word_count: int | None = Field(None, ge=300, le=3000)
 
 
@@ -163,6 +113,7 @@ class AttemptOut(ApiModel):
     started_at: datetime | None
     finished_at: datetime | None
     forked_from_workflow_id: str | None
+    error: dict[str, Any] | None = None
 
 
 class StepOut(ApiModel):
@@ -186,6 +137,9 @@ class RunDetail(RunOut):
     params: dict[str, Any]
     attempts: list[AttemptOut]
     steps: list[StepOut]
+    error: dict[str, Any] | None = None
+    article_ids: list[uuid.UUID] = Field(default_factory=list)
+    research_run_ids: list[uuid.UUID] = Field(default_factory=list)
 
 
 class Page[T](ApiModel):

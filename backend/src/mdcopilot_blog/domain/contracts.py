@@ -1,8 +1,8 @@
-"""Typed contracts shared by agents, workflows and the API (ARCHITECTURE §12).
+"""Typed contracts shared by agents, workflows and the API.
 
 Attributes are snake_case in Python and camelCase on the wire. Input may use either spelling,
 unknown keys are rejected, and every score or confidence is bounded to 0..1.
-Every field is required, as in §12: a nullable field must still be sent, as null.
+Every field is required: a nullable field must still be sent, as null.
 """
 
 from datetime import datetime
@@ -15,9 +15,6 @@ from pydantic.alias_generators import to_camel
 from mdcopilot_blog.domain.enums import (
     ApprovalMode,
     ArticleComponent,
-    ArticleStatus,
-    CandidateStatus,
-    RunStatus,
     SectionKey,
 )
 from mdcopilot_blog.domain.text import ATX_HEADING_RE
@@ -105,37 +102,6 @@ class PillarKey(StrEnum):
 # --- research --------------------------------------------------------------------------------------------------
 
 
-class ResearchSource(Contract):
-    """A ledger entry (``blog_sources``)."""
-
-    id: str
-    title: str
-    url: str
-    canonical_url: str
-    publisher: str
-    domain: str
-    published_at: datetime | None
-    date_source: Literal["feed", "api", "jsonld", "meta", "htmldate", "none"]
-    retrieved_at: datetime
-    source_type: SourceType
-    tier: Literal[1, 2, 3]
-    access_mode: Literal["full_text", "abstract_only", "metadata_only"]
-    relevance_score: UnitScore
-
-
-class ResearchFinding(Contract):
-    """A typed finding linked to ledger sources (``blog_research_findings``)."""
-
-    id: str
-    claim: str
-    evidence: str
-    source_ids: list[str]
-    confidence: UnitScore
-    category: str
-    claim_type: ClaimType
-    importance: Literal["high", "normal"]
-
-
 # --- topics and novelty ----------------------------------------------------------------------------------------
 
 
@@ -146,7 +112,7 @@ class NewsRef(Contract):
 
 
 class ScoreItem(Contract):
-    """One component of a topic score (ARCHITECTURE §9)."""
+    """One component of a topic score."""
 
     weight: UnitScore
     score: UnitScore
@@ -154,7 +120,7 @@ class ScoreItem(Contract):
 
 
 class NoveltyNeighbour(Contract):
-    """One of the nearest stored items to a candidate (ARCHITECTURE §8)."""
+    """One of the nearest stored items to a candidate."""
 
     kind: str
     ref_id: str
@@ -166,30 +132,6 @@ class NoveltyResult(Contract):
     decision: NoveltyDecision
     max_similarity: UnitScore
     neighbours: list[NoveltyNeighbour]
-
-
-class TopicCandidate(Contract):
-    """A proposed topic with its scores (``blog_topic_candidates``)."""
-
-    topic_id: str
-    title: str
-    hook: str
-    why_now: str
-    relevant_news: list[NewsRef]
-    mdcopilot_connection: str
-    target_audience: str
-    pillar: PillarKey
-    novelty_score: UnitScore
-    evidence_score: UnitScore
-    business_relevance: UnitScore
-    editorial_potential: UnitScore
-    timeliness_score: UnitScore
-    audience_relevance: UnitScore
-    total_score: UnitScore
-    score_breakdown: dict[str, ScoreItem]
-    novelty: NoveltyResult
-    sources: list[str]
-    status: CandidateStatus
 
 
 # --- article parts ---------------------------------------------------------------------------------------------
@@ -207,7 +149,7 @@ class InternalLink(Contract):
 
 
 class SEOMetadata(Contract):
-    """Spec §22 SEO output for one article version."""
+    """SEO output for one article version."""
 
     seo_title: str
     meta_description: str
@@ -243,7 +185,7 @@ class BlogSource(Contract):
 
 
 class ClaimCheck(Contract):
-    """One extracted claim and its verification (ARCHITECTURE §10)."""
+    """One extracted claim and its verification."""
 
     claim: str
     kind: ClaimKind
@@ -404,9 +346,7 @@ class ComponentDraft(Contract):
             ArticleComponent.CTA: self.cta,
         }[self.component]
         present = [
-            value
-            for value in (self.title_options, self.section, self.pull_quote, self.cta)
-            if value is not None
+            value for value in (self.title_options, self.section, self.pull_quote, self.cta) if value is not None
         ]
         if len(present) != 1 or matching is None:
             raise ValueError("exactly the field matching component must be set")
@@ -451,33 +391,3 @@ class HumanDecision(Contract):
 
 
 # --- article view ----------------------------------------------------------------------------------------------
-
-
-class GeneratedBlogPost(Contract):
-    """API view over an article, its current version and the version's side tables."""
-
-    id: str
-    topic_id: str
-    title_options: TitleOptions
-    selected_title: str | None
-    slug: str
-    content_markdown: str
-    excerpt: str
-    pull_quote: str
-    cta: str
-    category: str
-    tags: list[str]
-    seo: SEOMetadata
-    social: SocialCopy | None
-    sources: list[BlogSource]
-    research_summary: str
-    fact_check: FactCheckResult
-    clinical_review: ClinicalReview
-    editorial_review: EditorialReview
-    quality_gates: GateReport
-    novelty: NoveltyResult
-    status: ArticleStatus
-    pipeline_status: RunStatus
-    version_no: Annotated[int, Field(ge=1)]
-    created_at: datetime
-    updated_at: datetime

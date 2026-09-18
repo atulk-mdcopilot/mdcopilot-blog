@@ -2,11 +2,10 @@
 
 import hashlib
 import secrets
-import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import CursorResult, select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mdcopilot_blog.db.models import User, UserSession
@@ -44,7 +43,7 @@ async def create_session(db: AsyncSession, user: User, *, ip: str | None, user_a
     return token
 
 
-async def resolve_session(db: AsyncSession, token: str, *, now: datetime) -> ResolvedSession | None:
+async def resolve_session(db: AsyncSession, token: str, *, now: datetime, touch: bool = True) -> ResolvedSession | None:
     """Return the live session for a token, or None if unknown, revoked, idle, expired or the user is inactive."""
     if not token:
         return None
@@ -70,9 +69,13 @@ async def resolve_session(db: AsyncSession, token: str, *, now: datetime) -> Res
         return None
     if not user.is_active:
         return None
-    if now - session.last_seen_at >= TOUCH_INTERVAL:
-        session.last_seen_at = now
-        await db.flush()
+    if touch and now - session.last_seen_at >= TOUCH_INTERVAL:
+        # Polling requests can complete out of order. Never move activity backwards.
+        await db.execute(
+            update(UserSession)
+            .where(UserSession.id == session.id, UserSession.revoked_at.is_(None))
+            .values(last_seen_at=func.greatest(UserSession.last_seen_at, now))
+        )
     return ResolvedSession(user=user, session=session)
 
 
@@ -83,19 +86,3 @@ async def revoke_session(db: AsyncSession, token: str, *, now: datetime) -> None
         .where(UserSession.token_hash == hash_token(token), UserSession.revoked_at.is_(None))
         .values(revoked_at=now)
     )
-
-
-async def revoke_user_sessions(
-    db: AsyncSession, user_id: uuid.UUID, *, now: datetime, keep_token: str | None = None
-) -> int:
-    """Revoke every live session of a user, optionally keeping one (no commit). Returns the count revoked."""
-    stmt = (
-        update(UserSession)
-        .where(UserSession.user_id == user_id, UserSession.revoked_at.is_(None))
-        .values(revoked_at=now)
-    )
-    if keep_token is not None:
-        stmt = stmt.where(UserSession.token_hash != hash_token(keep_token))
-    result = await db.execute(stmt)
-    assert isinstance(result, CursorResult)
-    return int(result.rowcount)

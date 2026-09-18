@@ -1,7 +1,6 @@
 """Text primitives shared by every article-producing track.
 
-Only the standard library and ``mdcopilot_blog.domain`` modules are imported here. The
-article-section functions (``assemble_markdown``/``split_markdown``) are added in FOUND-5;
+Only the standard library and ``mdcopilot_blog.domain`` modules are imported here.
 ``contracts.py`` imports ``ATX_HEADING_RE`` from this module, so this module must not import
 ``contracts`` at runtime.
 """
@@ -65,7 +64,10 @@ def assemble_markdown(sections: Sequence["ArticleSection"]) -> str:
         raise ArticleStructureError("sections must be the seven SECTION_ORDER keys in order")
     parts = [sections[0].body_markdown.strip()]
     for section in sections[1:]:
-        parts.append(f"## {section.heading.strip()}")
+        heading = section.heading
+        if heading is None:
+            raise ArticleStructureError("sections must be the seven SECTION_ORDER keys in order")
+        parts.append(f"## {heading.strip()}")
         parts.append(section.body_markdown.strip())
     return "\n\n".join(parts) + "\n"
 

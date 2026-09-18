@@ -15,12 +15,14 @@ from dbos import DBOS
 
 from mdcopilot_blog.logs import configure_logging
 from mdcopilot_blog.settings import Settings, get_settings
+from mdcopilot_blog.workflows import human_actions  # noqa: F401 -- register before DBOS launch
+from mdcopilot_blog.workflows.automation import apply_maintenance_schedules, effective_schedule_settings
 from mdcopilot_blog.workflows.dbos_config import build_dbos_config
 from mdcopilot_blog.workflows.names import HEARTBEAT_FILE, QUEUE_INTERACTIVE, QUEUE_PIPELINE
+from mdcopilot_blog.workflows.retention import apply_retention_schedule
 from mdcopilot_blog.workflows.runtime import build_runtime, set_runtime
 
-# Importing schedules also imports hello: both modules register their workflows and steps with DBOS
-# at import time, which must happen before DBOS.launch().
+# Importing schedules registers discovery and schedule workflows before DBOS.launch().
 from mdcopilot_blog.workflows.schedules import apply_daily_schedule, catch_up_today
 
 logger = logging.getLogger("mdcopilot_blog.worker")
@@ -68,8 +70,11 @@ async def _run_dbos(settings: Settings, stop: asyncio.Event) -> None:
         # dbos 3.0: queues can only be registered after launch
         await DBOS.register_queue_async(QUEUE_PIPELINE, worker_concurrency=PIPELINE_CONCURRENCY)
         await DBOS.register_queue_async(QUEUE_INTERACTIVE, worker_concurrency=INTERACTIVE_CONCURRENCY)
-        await apply_daily_schedule(settings)
-        caught_up = await catch_up_today(settings, datetime.now(UTC))
+        effective = await effective_schedule_settings()
+        await apply_daily_schedule(effective)
+        await apply_maintenance_schedules(effective.timezone)
+        await apply_retention_schedule(effective)
+        caught_up = await catch_up_today(effective, datetime.now(UTC))
         if caught_up is not None:
             logger.info("started today's missed daily run", extra={"workflow_id": caught_up})
 

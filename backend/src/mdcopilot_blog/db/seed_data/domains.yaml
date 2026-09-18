@@ -1,0 +1,47 @@
+# Research source domain rules. Verified 2026-09-17.
+# Edits after seeding happen in the Sources page; seeding never updates existing rows.
+domains:
+  - {domain: fda.gov, tier: 1, source_type: government, publisher: U.S. Food and Drug Administration, verification_allowlisted: true}
+  - {domain: accessdata.fda.gov, tier: 1, source_type: government, publisher: U.S. Food and Drug Administration, verification_allowlisted: true, fetch_policy: metadata_only, notes: "device database pages; cite as metadata"}
+  - {domain: cms.gov, tier: 1, source_type: government, publisher: Centers for Medicare & Medicaid Services, verification_allowlisted: true}
+  - {domain: medicaid.gov, tier: 1, source_type: government, publisher: Medicaid.gov, verification_allowlisted: true}
+  - {domain: hhs.gov, tier: 1, source_type: government, publisher: U.S. Department of Health and Human Services, verification_allowlisted: true, header_profile: browser_like}
+  - {domain: cdc.gov, tier: 1, source_type: government, publisher: Centers for Disease Control and Prevention, verification_allowlisted: true}
+  - {domain: nih.gov, tier: 1, source_type: government, publisher: National Institutes of Health, verification_allowlisted: true, fetch_policy: metadata_only, notes: "Cloudflare challenge to direct fetch (2026-09-17)"}
+  - {domain: healthit.gov, tier: 1, source_type: government, publisher: ASTP/ONC, verification_allowlisted: true}
+  - {domain: federalregister.gov, tier: 1, source_type: government, publisher: Federal Register, verification_allowlisted: true}
+  - {domain: ahrq.gov, tier: 1, source_type: government, publisher: Agency for Healthcare Research and Quality, verification_allowlisted: true}
+  - {domain: hrsa.gov, tier: 1, source_type: government, publisher: Health Resources and Services Administration, verification_allowlisted: true}
+  - {domain: va.gov, tier: 1, source_type: government, publisher: U.S. Department of Veterans Affairs, verification_allowlisted: true}
+  - {domain: gao.gov, tier: 1, source_type: government, publisher: U.S. Government Accountability Office, verification_allowlisted: true}
+  - {domain: who.int, tier: 1, source_type: government, publisher: World Health Organization, verification_allowlisted: true}
+  - {domain: pubmed.ncbi.nlm.nih.gov, tier: 1, source_type: journal, publisher: PubMed, verification_allowlisted: true, fetch_policy: metadata_only, notes: "abstracts come from E-utilities efetch"}
+  - {domain: jamanetwork.com, tier: 1, source_type: journal, publisher: JAMA Network, verification_allowlisted: true, fetch_policy: metadata_only, notes: "article pages bot-walled; resolve to PubMed"}
+  - {domain: thelancet.com, tier: 1, source_type: journal, publisher: The Lancet, verification_allowlisted: true, fetch_policy: metadata_only}
+  - {domain: nejm.org, tier: 1, source_type: journal, publisher: NEJM, verification_allowlisted: true, fetch_policy: metadata_only}
+  - {domain: nature.com, tier: 1, source_type: journal, publisher: Nature Portfolio, verification_allowlisted: true, header_profile: browser_like}
+  - {domain: bmj.com, tier: 1, source_type: journal, publisher: The BMJ, verification_allowlisted: true, fetch_policy: metadata_only}
+  - {domain: healthaffairs.org, tier: 1, source_type: journal, publisher: Health Affairs, verification_allowlisted: true, fetch_policy: metadata_only}
+  - {domain: ama-assn.org, tier: 1, source_type: other, publisher: American Medical Association, verification_allowlisted: true}
+  - {domain: aamc.org, tier: 1, source_type: other, publisher: Association of American Medical Colleges, verification_allowlisted: true}
+  - {domain: acponline.org, tier: 1, source_type: other, publisher: American College of Physicians, verification_allowlisted: true}
+  - {domain: aha.org, tier: 1, source_type: other, publisher: American Hospital Association, verification_allowlisted: true}
+  - {domain: medrxiv.org, tier: 2, source_type: preprint, publisher: medRxiv, verification_allowlisted: false, fetch_policy: metadata_only}
+  - {domain: biorxiv.org, tier: 2, source_type: preprint, publisher: bioRxiv, verification_allowlisted: false, fetch_policy: metadata_only}
+  - {domain: arxiv.org, tier: 2, source_type: preprint, publisher: arXiv, verification_allowlisted: false}
+  - {domain: reuters.com, tier: 2, source_type: trade_press, publisher: Reuters, verification_allowlisted: true, fetch_policy: never, notes: "robots.txt disallows unknown bots; search covers it"}
+  - {domain: apnews.com, tier: 2, source_type: trade_press, publisher: Associated Press, verification_allowlisted: true}
+  - {domain: statnews.com, tier: 2, source_type: trade_press, publisher: STAT, verification_allowlisted: true}
+  - {domain: fiercehealthcare.com, tier: 2, source_type: trade_press, publisher: Fierce Healthcare, verification_allowlisted: true}
+  - {domain: medcitynews.com, tier: 2, source_type: trade_press, publisher: MedCity News, verification_allowlisted: true}
+  - {domain: beckershospitalreview.com, tier: 2, source_type: trade_press, publisher: Becker's Hospital Review, verification_allowlisted: true}
+  - {domain: healthcareitnews.com, tier: 2, source_type: trade_press, publisher: Healthcare IT News, verification_allowlisted: true, fetch_policy: metadata_only, notes: "Cloudflare challenge to direct fetch (2026-09-17)"}
+  - {domain: modernhealthcare.com, tier: 2, source_type: trade_press, publisher: Modern Healthcare, verification_allowlisted: true}
+  - {domain: kffhealthnews.org, tier: 2, source_type: trade_press, publisher: KFF Health News, verification_allowlisted: true}
+  - {domain: axios.com, tier: 2, source_type: trade_press, publisher: Axios, verification_allowlisted: true}
+  - {domain: technologyreview.com, tier: 2, source_type: trade_press, publisher: MIT Technology Review, verification_allowlisted: true}
+  - {domain: openai.com, tier: 1, source_type: company_announcement, publisher: OpenAI, verification_allowlisted: false, fetch_policy: metadata_only, notes: "article pages bot-walled; Tier 1 for its own announcements only"}
+  - {domain: blog.google, tier: 1, source_type: company_announcement, publisher: Google, verification_allowlisted: false, notes: "Tier 1 for its own announcements only"}
+  - {domain: research.google, tier: 1, source_type: company_announcement, publisher: Google Research, verification_allowlisted: false, notes: "Tier 1 for its own announcements only"}
+  - {domain: deepmind.google, tier: 1, source_type: company_announcement, publisher: Google DeepMind, verification_allowlisted: false, notes: "Tier 1 for its own announcements only"}
+  - {domain: anthropic.com, tier: 1, source_type: company_announcement, publisher: Anthropic, verification_allowlisted: false, notes: "no feed; Tier 1 for its own announcements only"}

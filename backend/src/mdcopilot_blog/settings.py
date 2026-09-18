@@ -23,6 +23,8 @@ from sqlalchemy import URL
 MIN_SESSION_SECRET_LENGTH = 32
 LOG_LEVELS = frozenset({"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"})
 _HH_MM = re.compile(r"(?:[01]\d|2[0-3]):[0-5]\d")
+_OPENAI_GPT_VERSION = re.compile(r"^openai:gpt-(\d+)(?:\.(\d+))?", re.IGNORECASE)
+MAX_OPENAI_GPT_VERSION = (5, 4)
 
 # "a, b ,,c" -> ["a", "b", "c"]. NoDecode stops pydantic-settings from JSON-decoding the value first.
 RouteList = Annotated[list[str], NoDecode]
@@ -50,16 +52,14 @@ class Settings(BaseSettings):
     )
 
     # --- App ---
-    app_env: Literal["development", "test", "production"] = Field("development", validation_alias="APP_ENV")
+    app_env: Literal["development", "production"] = Field("development", validation_alias="APP_ENV")
     app_version: str = Field("0.1.0", validation_alias="APP_VERSION")
     log_level: str = Field("INFO", validation_alias="LOG_LEVEL")
 
-    # --- Sessions and bootstrap ---
+    # --- Sessions ---
     session_secret: SecretStr = Field(validation_alias="SESSION_SECRET")
     session_cookie_secure: bool = Field(False, validation_alias="SESSION_COOKIE_SECURE")
     public_app_url: str = Field("http://localhost:8310", validation_alias="PUBLIC_APP_URL")
-    bootstrap_admin_email: str | None = Field(None, validation_alias="BOOTSTRAP_ADMIN_EMAIL")
-    bootstrap_admin_password: SecretStr | None = Field(None, validation_alias="BOOTSTRAP_ADMIN_PASSWORD")
 
     # --- Database ---
     postgres_db: str = Field("mdcopilot_blog", validation_alias="POSTGRES_DB")
@@ -77,13 +77,9 @@ class Settings(BaseSettings):
 
     # --- Flags (environment-only safety switches) ---
     agent_enabled: bool = Field(True, validation_alias="BLOG_AGENT_ENABLED")
-    mock_mode: bool = Field(True, validation_alias="BLOG_AGENT_MOCK_MODE")
-    mock_scenario: str | None = Field(None, pattern=r"^[a-z0-9_]{1,64}$", validation_alias="BLOG_AGENT_MOCK_SCENARIO")
-    mock_step_delay_seconds: float = Field(0.0, ge=0, validation_alias="BLOG_AGENT_MOCK_STEP_DELAY_SECONDS")
     scheduler_enabled: bool = Field(False, validation_alias="BLOG_AGENT_SCHEDULER_ENABLED")
     human_approval_required: bool = Field(True, validation_alias="BLOG_HUMAN_APPROVAL_REQUIRED")
     publishing_enabled: bool = Field(False, validation_alias="BLOG_PUBLISHING_ENABLED")
-    gemini_grounding_enabled: bool = Field(False, validation_alias="BLOG_GEMINI_GROUNDING_ENABLED")
 
     # --- Schedule and content ---
     daily_run_time: str = Field("07:00", validation_alias="BLOG_AGENT_DAILY_RUN_TIME")
@@ -98,39 +94,51 @@ class Settings(BaseSettings):
 
     # --- Model routes: ordered "provider:model" lists, first = primary (defaults = .env.example) ---
     search_route: RouteList = Field(
-        default_factory=lambda: ["openai:gpt-5.6-luna"],
+        default_factory=lambda: ["openai:gpt-5.4-mini"],
         validation_alias="BLOG_AGENT_SEARCH_ROUTE",
     )
     research_route: RouteList = Field(
-        default_factory=lambda: ["google:gemini-3.8-flash", "openai:gpt-5.6-terra"],
+        default_factory=lambda: ["google:gemini-3.8-flash", "openai:gpt-5.4-mini"],
         validation_alias="BLOG_AGENT_RESEARCH_ROUTE",
     )
     ideation_route: RouteList = Field(
-        default_factory=lambda: ["google:gemini-3.8-flash", "openai:gpt-5.6-terra"],
+        default_factory=lambda: [
+            "google:gemini-3.5-flash-lite",
+            "google:gemini-3.8-flash",
+            "openai:gpt-5.4-mini",
+        ],
         validation_alias="BLOG_AGENT_IDEATION_ROUTE",
     )
     deep_research_route: RouteList = Field(
-        default_factory=lambda: ["google:gemini-3.8-flash", "openai:gpt-5.6-terra"],
+        default_factory=lambda: ["google:gemini-3.8-flash", "openai:gpt-5.4-mini"],
         validation_alias="BLOG_AGENT_DEEP_RESEARCH_ROUTE",
     )
     writer_route: RouteList = Field(
-        default_factory=lambda: ["openai:gpt-5.6-sol", "google:gemini-3.8-flash", "anthropic:claude-sonnet-5"],
+        default_factory=lambda: ["openai:gpt-5.4", "google:gemini-3.8-flash", "anthropic:claude-sonnet-5"],
         validation_alias="BLOG_AGENT_WRITER_ROUTE",
     )
     fact_check_route: RouteList = Field(
-        default_factory=lambda: ["google:gemini-3.8-flash", "openai:gpt-5.6-terra", "anthropic:claude-sonnet-5"],
+        default_factory=lambda: [
+            "google:gemini-3.8-flash",
+            "openai:gpt-5.4-mini",
+            "anthropic:claude-sonnet-5",
+        ],
         validation_alias="BLOG_AGENT_FACT_CHECK_ROUTE",
     )
     clinical_route: RouteList = Field(
-        default_factory=lambda: ["openai:gpt-5.6-sol", "google:gemini-3.8-flash"],
+        default_factory=lambda: ["google:gemini-3.8-flash", "openai:gpt-5.4-mini"],
         validation_alias="BLOG_AGENT_CLINICAL_ROUTE",
     )
     editorial_route: RouteList = Field(
-        default_factory=lambda: ["openai:gpt-5.6-terra", "google:gemini-3.8-flash"],
+        default_factory=lambda: [
+            "google:gemini-3.5-flash-lite",
+            "google:gemini-3.8-flash",
+            "openai:gpt-5.4-mini",
+        ],
         validation_alias="BLOG_AGENT_EDITORIAL_ROUTE",
     )
     seo_route: RouteList = Field(
-        default_factory=lambda: ["google:gemini-3.5-flash-lite", "openai:gpt-5.6-luna"],
+        default_factory=lambda: ["google:gemini-3.5-flash-lite", "openai:gpt-5.4-mini"],
         validation_alias="BLOG_AGENT_SEO_ROUTE",
     )
     embedding_model: str = Field("google:gemini-embedding-2", validation_alias="BLOG_AGENT_EMBEDDING_MODEL")
@@ -165,22 +173,13 @@ class Settings(BaseSettings):
     # --- MDCopilot integration ---
     mdcopilot_public_api_url: str | None = Field(None, validation_alias="BLOG_MDCOPILOT_PUBLIC_API_URL")
     mdcopilot_sync_page_size: int = Field(50, ge=1, le=100, validation_alias="BLOG_MDCOPILOT_SYNC_PAGE_SIZE")
-    publisher: Literal["manual_export", "mdcopilot_api", "null"] = Field(
-        "manual_export", validation_alias="BLOG_PUBLISHER"
-    )
+    publisher: Literal["manual_export", "mdcopilot_api"] = Field("manual_export", validation_alias="BLOG_PUBLISHER")
     publisher_api_url: str = Field("http://host.docker.internal:8000/api/v1", validation_alias="BLOG_PUBLISHER_API_URL")
     publisher_login_id: str | None = Field(None, validation_alias="BLOG_PUBLISHER_LOGIN_ID")
     publisher_password: SecretStr | None = Field(None, validation_alias="BLOG_PUBLISHER_PASSWORD")
     publisher_public_url: str = Field("http://localhost:3000", validation_alias="BLOG_PUBLISHER_PUBLIC_URL")
     publisher_login_path: str = Field("/auth/login", pattern=r"^/", validation_alias="BLOG_PUBLISHER_LOGIN_PATH")
     publisher_timeout_seconds: float = Field(20.0, gt=0, validation_alias="BLOG_PUBLISHER_TIMEOUT_SECONDS")
-
-    # --- Observability and notifications ---
-    otel_exporter_otlp_endpoint: str | None = Field(None, validation_alias="OTEL_EXPORTER_OTLP_ENDPOINT")
-    notify_webhook_url: str | None = Field(None, validation_alias="BLOG_NOTIFY_WEBHOOK_URL")
-    notify_webhook_timeout_seconds: float = Field(5.0, gt=0, validation_alias="BLOG_NOTIFY_WEBHOOK_TIMEOUT_SECONDS")
-    cost_reconciliation_enabled: bool = Field(False, validation_alias="BLOG_COST_RECONCILIATION_ENABLED")
-    openai_admin_api_key: SecretStr | None = Field(None, validation_alias="OPENAI_ADMIN_API_KEY")
 
     # --- Worker ---
     worker_executor_id: str = Field("worker-1", validation_alias="WORKER_EXECUTOR_ID")
@@ -234,6 +233,13 @@ class Settings(BaseSettings):
     def _check_route_not_empty(cls, value: list[str]) -> list[str]:
         if not value:
             raise ValueError("route must list at least one provider:model")
+        for entry in value:
+            match = _OPENAI_GPT_VERSION.match(entry)
+            if match is None:
+                continue
+            version = (int(match.group(1)), int(match.group(2) or 0))
+            if version > MAX_OPENAI_GPT_VERSION:
+                raise ValueError("OpenAI GPT route models may not exceed gpt-5.4")
         return value
 
     @model_validator(mode="after")
@@ -290,5 +296,5 @@ class Settings(BaseSettings):
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    """Process-wide settings. Tests call `get_settings.cache_clear()` after changing the environment."""
+    """Load and cache process-wide settings."""
     return Settings()

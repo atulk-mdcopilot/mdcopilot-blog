@@ -10,8 +10,9 @@ import io
 import logging
 import os
 import sys
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, redirect_stdout
+from datetime import UTC, datetime
 
 from alembic import command
 from alembic.config import Config
@@ -101,6 +102,10 @@ def seed(settings: Settings) -> int:
         f"seed: settings_created={report.settings_created} brand_created={report.brand_created} "
         f"pillars_created={report.pillars_created}"
     )
+    print(
+        f"seed-catalogue: feeds_created={report.feeds_created} domains_created={report.domains_created} "
+        f"themes_created={report.themes_created} price_overrides_created={report.price_overrides_created}"
+    )
     return EXIT_OK
 
 
@@ -186,6 +191,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("migrate-dbos", help="create or upgrade the DBOS system tables (schema dbos)")
     sub.add_parser("seed", help="insert default settings, brand profile and content pillars (idempotent)")
     sub.add_parser("sync-prompts", help="register prompt files in blog_prompt_versions")
+    sub.add_parser("purge-snapshots", help="purge expired source snapshots while retaining active research")
 
     admin = sub.add_parser("create-admin", help="create an admin account; no change if the email exists")
     admin.add_argument("--email", required=True)
@@ -200,12 +206,10 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Sequence[str] | None = None, *, settings: Settings | None = None) -> int:
-    """Run one command. Tests pass ``settings`` (the test database); then logging is left alone."""
-    args = build_parser().parse_args(argv)
-    if settings is None:
-        settings = get_settings()
-        configure_logging(settings.log_level)
+def main() -> int:
+    args = build_parser().parse_args()
+    settings = get_settings()
+    configure_logging(settings.log_level)
 
     name: str = args.command
     if name == "migrate":
@@ -216,6 +220,23 @@ def main(argv: Sequence[str] | None = None, *, settings: Settings | None = None)
         return seed(settings)
     if name == "sync-prompts":
         return sync_prompts(settings)
+    if name == "purge-snapshots":
+        from mdcopilot_blog.services.retention import purge_source_snapshots
+
+        async def purge() -> int:
+            engine = make_engine(settings.database_url())
+            try:
+                report = await purge_source_snapshots(
+                    make_sessionmaker(engine), settings=settings, now=datetime.now(UTC)
+                )
+                print(
+                    f"purge-snapshots: purged={report.purged} batches={report.batches} more_remaining={str(report.more_remaining).lower()} cutoff={report.cutoff.isoformat()}"
+                )
+                return EXIT_OK
+            finally:
+                await engine.dispose()
+
+        return asyncio.run(purge())
     role = Role.ADMIN if name == "create-admin" else Role(args.role)
     return create_account(
         settings, email=args.email, display_name=args.display_name, role=role, password_env=args.password_env

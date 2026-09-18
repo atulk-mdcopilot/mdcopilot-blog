@@ -48,7 +48,7 @@ avoid:
   - fabricated anecdotes
   - fabricated quotes
   - fabricated physician experiences
-# Quality gate 10 fails when any of these phrases appears (case-insensitive match is decided in Phase 5)
+# Quality gate 10 fails when any of these phrases appears (case-insensitive).
 prohibited_language:
   - AI is transforming healthcare
   - revolutionize

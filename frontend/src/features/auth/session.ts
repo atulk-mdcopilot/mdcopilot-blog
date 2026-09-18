@@ -11,12 +11,12 @@ export type SessionUser = {
   permissions: Permission[]
 }
 
-export type SessionResponse = {
+type SessionResponse = {
   user: SessionUser
   csrfToken: string
 }
 
-export type LoginInput = {
+type LoginInput = {
   email: string
   password: string
 }

@@ -1,0 +1,10 @@
+# Catalogue owned by PROV.
+price_overrides:
+  - provider: openai
+    sku: web_search_call
+    input_per_mtok: null
+    output_per_mtok: null
+    cache_read_per_mtok: null
+    per_1k_calls: 10.00
+    effective_from: "2026-01-01"
+    note: "OpenAI Responses web_search tool: $10.00 per 1,000 search calls (openai.com/api/pricing, read 2026-09-17). Search content tokens are billed at the model's token rates."

@@ -9,7 +9,7 @@ import json
 import logging
 import sys
 from collections.abc import Mapping
-from contextvars import ContextVar, Token
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from types import MappingProxyType
 
@@ -29,22 +29,14 @@ LogContext = Mapping[str, str]
 _log_context: ContextVar[LogContext | None] = ContextVar("mdcopilot_blog_log_context", default=None)
 
 
-def bind_log_context(*, run_id: str | None = None, trace_id: str | None = None) -> Token[LogContext | None]:
-    """Add `run_id`/`trace_id` to the current context (merged with what is already bound).
-
-    Returns the token for `reset_log_context`. Each asyncio task works on its own copy of the context.
-    """
+def bind_log_context(*, run_id: str | None = None, trace_id: str | None = None) -> None:
+    """Add `run_id`/`trace_id` to the current task's context."""
     merged = dict(_log_context.get() or {})
     if run_id is not None:
         merged["run_id"] = run_id
     if trace_id is not None:
         merged["trace_id"] = trace_id
-    return _log_context.set(MappingProxyType(merged))
-
-
-def reset_log_context(token: Token[LogContext | None]) -> None:
-    """Restore the context that was active before the matching `bind_log_context` call."""
-    _log_context.reset(token)
+    _log_context.set(MappingProxyType(merged))
 
 
 def log_context() -> dict[str, str]:
@@ -89,7 +81,7 @@ def configure_logging(level: str) -> None:
     """Send every log record to stdout as JSON at `level` (a name such as "INFO").
 
     Safe to call more than once: it replaces the handler it installed earlier and leaves other root
-    handlers (for example pytest's capture handler) alone. Uvicorn's loggers lose their own handlers and
+    handlers alone. Uvicorn's loggers lose their own handlers and
     propagate to the root, so access and error logs are JSON too. Call it after uvicorn has configured
     logging (inside the app factory) and at worker start-up.
     """

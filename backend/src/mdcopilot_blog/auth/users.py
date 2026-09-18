@@ -56,12 +56,6 @@ async def create_user(db: AsyncSession, *, email: str, display_name: str, role: 
     return user
 
 
-async def set_password(user: User, password: str) -> None:
-    """Validate and hash a new password onto the user (the caller flushes/commits)."""
-    validate_password(password)
-    user.password_hash = await asyncio.to_thread(hash_password, password)
-
-
 @cache
 def _dummy_hash() -> str:
     return hash_password("dummy-password-for-timing")
