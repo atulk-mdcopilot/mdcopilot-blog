@@ -21,32 +21,16 @@ from mdcopilot_blog.domain.contracts import (
     SocialCopy,
     TitleOptions,
 )
-from mdcopilot_blog.domain.enums import GateId, GateRunKind
+from mdcopilot_blog.domain.enums import GateId
 from mdcopilot_blog.domain.numeric_scan import numeric_sentences
 from mdcopilot_blog.domain.quotes import find_quotes, unverified_quotes
 from mdcopilot_blog.domain.text import assemble_markdown, body_word_count, normalize_for_match, strip_citation_markers
 
 BAD_STATUSES = {"UNSUPPORTED", "OUTDATED", "MISLEADING"}
-FULL_ORDER = tuple(GateId)
-DETERMINISTIC_ORDER = tuple(
-    GateId(value)
-    for value in (
-        "sources_present",
-        "no_duplicate_topic",
-        "word_count",
-        "required_structure",
-        "cta_fresh",
-        "no_prohibited_language",
-        "seo_complete",
-        "disclosure_present",
-        "opening_diversity",
-        "headline_diversity",
-        "source_domain_diversity",
-    )
-)
-FIXABLE_BLOCKING = frozenset(g.value for g in list(GateId)[:15]) - {
+# Every gate is blocking except these. Explicit on purpose: severity must not depend on GateId member order.
+WARNING_GATES = frozenset({GateId.INDEPENDENT_FACT_CHECK})
+FIXABLE_BLOCKING = frozenset(g.value for g in GateId if g not in WARNING_GATES) - {
     "sources_present",
-    "no_duplicate_topic",
     "disclosure_present",
 }
 
@@ -85,9 +69,6 @@ class GateInputs:
     clinical_resolved: frozenset[str]
     editorial: LineageReview[EditorialReview] | None
     editorial_resolved: frozenset[str]
-    duplicate: GateResult | None
-    cta_fresh: GateResult | None
-    diversity_warnings: tuple[GateResult, ...]
     config: EffectiveConfig
     brand: BrandProfileValues
 
@@ -108,7 +89,7 @@ def _result(gate: str, problems: list[str]) -> GateResult:
     return GateResult(
         gate=str(gate),
         passed=not problems,
-        severity="warning" if GateId(gate) in tuple(GateId)[15:] else "blocking",
+        severity="warning" if GateId(gate) in WARNING_GATES else "blocking",
         details="; ".join(problems) if problems else "ok",
     )
 
@@ -213,15 +194,6 @@ def gate_no_unsourced_anecdotes(i: GateInputs) -> GateResult:
     return _result("no_unsourced_anecdotes", problems)
 
 
-def gate_no_duplicate_topic(i: GateInputs) -> GateResult:
-    return _result(
-        "no_duplicate_topic",
-        []
-        if i.duplicate and i.duplicate.passed
-        else [i.duplicate.details if i.duplicate else "duplicate check not run"],
-    )
-
-
 def gate_word_count(i: GateInputs) -> GateResult:
     count = body_word_count(i.sections)
     return _result(
@@ -250,17 +222,6 @@ def gate_required_structure(i: GateInputs) -> GateResult:
     if i.content_markdown != assemble_markdown(i.sections):
         problems.append("content_markdown does not match the sections")
     return _result("required_structure", problems)
-
-
-def gate_cta_fresh(i: GateInputs) -> GateResult:
-    return _result(
-        "cta_fresh",
-        []
-        if i.cta.strip() and i.cta_fresh and i.cta_fresh.passed
-        else [
-            "CTA is empty" if not i.cta.strip() else i.cta_fresh.details if i.cta_fresh else "CTA freshness not checked"
-        ],
-    )
 
 
 def gate_no_prohibited_language(i: GateInputs) -> GateResult:
@@ -393,32 +354,15 @@ def gate_independent_fact_check(i: GateInputs) -> GateResult:
     )
 
 
-def diversity_warnings(i: GateInputs) -> list[GateResult]:
-    return [
-        next(
-            (
-                warning.model_copy(update={"severity": "warning"})
-                for warning in i.diversity_warnings
-                if warning.gate == gate
-            ),
-            GateResult(gate=gate, passed=True, severity="warning", details="not evaluated"),
-        )
-        for gate in ("opening_diversity", "headline_diversity", "source_domain_diversity")
-    ]
-
-
-def evaluate_gates(inputs: GateInputs, *, run_kind: GateRunKind) -> GateReport:
-    warnings = {r.gate: r for r in diversity_warnings(inputs)}
+def evaluate_gates(inputs: GateInputs) -> GateReport:
     functions: dict[GateId, Callable[[GateInputs], GateResult]] = {
         GateId.SOURCES_PRESENT: gate_sources_present,
         GateId.CLAIMS_VERIFIED: gate_claims_verified,
         GateId.NO_UNSUPPORTED_STATISTICS: gate_no_unsupported_statistics,
         GateId.NO_FABRICATED_QUOTES: gate_no_fabricated_quotes,
         GateId.NO_UNSOURCED_ANECDOTES: gate_no_unsourced_anecdotes,
-        GateId.NO_DUPLICATE_TOPIC: gate_no_duplicate_topic,
         GateId.WORD_COUNT: gate_word_count,
         GateId.REQUIRED_STRUCTURE: gate_required_structure,
-        GateId.CTA_FRESH: gate_cta_fresh,
         GateId.NO_PROHIBITED_LANGUAGE: gate_no_prohibited_language,
         GateId.SEO_COMPLETE: gate_seo_complete,
         GateId.FACT_CHECK_PASSED: gate_fact_check_passed,
@@ -427,8 +371,5 @@ def evaluate_gates(inputs: GateInputs, *, run_kind: GateRunKind) -> GateReport:
         GateId.DISCLOSURE_PRESENT: gate_disclosure_present,
         GateId.INDEPENDENT_FACT_CHECK: gate_independent_fact_check,
     }
-    results = [
-        warnings[gate.value] if gate.value in warnings else functions[gate](inputs)
-        for gate in (DETERMINISTIC_ORDER if run_kind == GateRunKind.DETERMINISTIC else FULL_ORDER)
-    ]
+    results = [functions[gate](inputs) for gate in GateId]
     return GateReport(passed=all(result.passed for result in results if result.severity == "blocking"), results=results)

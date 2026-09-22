@@ -22,9 +22,8 @@ from mdcopilot_blog.db.models import (
     Topic,
     TopicCandidateRecord,
 )
-from mdcopilot_blog.domain.article_assembly import apply_component
-from mdcopilot_blog.domain.contracts import AvoidBundle, ResearchPacket, RevisionFinding
-from mdcopilot_blog.domain.enums import ArticleComponent, ChangeKind, SectionKey
+from mdcopilot_blog.domain.contracts import ResearchPacket, RevisionFinding
+from mdcopilot_blog.domain.enums import ChangeKind
 from mdcopilot_blog.domain.errors import InsufficientEvidence
 from mdcopilot_blog.ids import uuid7
 from mdcopilot_blog.services import versions
@@ -50,8 +49,6 @@ WRITABLE_STATUSES = frozenset(
         "CLINICAL_REVIEW",
         "EDITORIAL_REVIEW",
         "SEO",
-        "READY_FOR_REVIEW",
-        "QUALITY_GATE_FAILED",
     }
 )
 
@@ -83,19 +80,16 @@ async def ensure_article(sc: StepContext, *, run_id: uuid.UUID, candidate_id: uu
             select(Article).where(
                 Article.run_id == run_id,
                 Article.candidate_id == candidate_id,
-                Article.status.notin_(["REJECTED", "SUPERSEDED"]),
             )
         )
         if article:
             return article.id
         topic = await db.scalar(select(Topic).where(Topic.candidate_id == candidate_id))
-        run = await db.get(BlogRun, run_id)
-        if candidate.status != "SELECTED" or topic is None or run is None:
+        if candidate.status != "SELECTED" or topic is None:
             raise ValueError("article requires a selected candidate with a promoted topic")
         article = Article(
             id=uuid7(),
             run_id=run_id,
-            run_date=run.run_date,
             candidate_id=candidate_id,
             topic_id=topic.id,
             status="DRAFTING",
@@ -189,11 +183,6 @@ async def build_research_packet(sc: StepContext, *, article_id: uuid.UUID, resea
         return PacketResult(packet_id=record.id, version=record.version)
 
 
-async def latest_packet_id(db: AsyncSession, *, article_id: uuid.UUID) -> uuid.UUID | None:
-    row = await versions.latest_packet(db, article_id)
-    return row.id if row else None
-
-
 def _result(row: ArticleVersion, parent: ArticleVersion | None = None) -> VersionResult:
     return VersionResult(
         version_id=row.id,
@@ -209,12 +198,8 @@ async def _write(
     article_id: uuid.UUID,
     packet_id: uuid.UUID | None = None,
     base_version_id: uuid.UUID | None = None,
-    avoid: AvoidBundle,
-    instructions: str | None = None,
     findings: Sequence[RevisionFinding] = (),
     change_kind: ChangeKind | None = None,
-    component: ArticleComponent | None = None,
-    section_key: SectionKey | None = None,
 ) -> VersionResult:
     async with sc.sessionmaker() as db:
         existing = await versions.find_step(db, ArticleVersion, sc.call)
@@ -241,22 +226,14 @@ async def _write(
         ctx=sc.with_ids(article_id=article_id).call,
         config=sc.config,
         brand=sc.brand,
-        avoid=avoid,
         topic=topic,
         packet=ResearchPacket.model_validate(packet.packet),
         numbered=numbered,
         base=base if base_version_id else None,
         findings=findings,
-        component=component,
-        section_key=section_key,
-        instructions=instructions,
         voice=tone if isinstance(tone, str) and tone.strip() else None,
     )
-    if component and base is None:
-        raise ValueError("component regeneration requires a base version")
-    content = (
-        apply_component(base, result.output) if component and base is not None else check_draft(result.output, numbered)
-    )
+    content = check_draft(result.output, numbered)
     async with sc.sessionmaker() as db:
         article = await versions.lock_article(db, article_id)
         existing = await versions.find_step(db, ArticleVersion, sc.call)
@@ -265,7 +242,7 @@ async def _write(
         await _ensure_writable(db, article, sc, lock_attempt=True)
         if article.current_version_id != parent_id:
             raise ValueError("article changed while the writer was running")
-        kind = change_kind or (ChangeKind.DRAFT if parent is None else ChangeKind.ARTICLE_REGENERATION)
+        kind = change_kind or ChangeKind.DRAFT
         row = await versions.save_version(
             db,
             article=article,
@@ -273,23 +250,16 @@ async def _write(
             packet=packet,
             parent_id=parent_id,
             change_kind=kind.value,
-            change_scope={
-                "component": component.value if component else None,
-                "sectionKey": section_key.value if section_key else None,
-                "instructions": instructions,
-                "findingIds": [f.finding_id for f in findings],
-            },
-            resolutions=result.output.resolutions if not component else (),
+            change_scope={"findingIds": [f.finding_id for f in findings]},
+            resolutions=result.output.resolutions,
             call=sc.call,
         )
         await db.commit()
         return _result(row, parent)
 
 
-async def write_draft(
-    sc: StepContext, *, article_id: uuid.UUID, packet_id: uuid.UUID, avoid: AvoidBundle, instructions: str | None = None
-) -> VersionResult:
-    return await _write(sc, article_id=article_id, packet_id=packet_id, avoid=avoid, instructions=instructions)
+async def write_draft(sc: StepContext, *, article_id: uuid.UUID, packet_id: uuid.UUID) -> VersionResult:
+    return await _write(sc, article_id=article_id, packet_id=packet_id)
 
 
 async def revise_article(
@@ -298,7 +268,6 @@ async def revise_article(
     article_id: uuid.UUID,
     base_version_id: uuid.UUID,
     findings: Sequence[RevisionFinding],
-    avoid: AvoidBundle,
     change_kind: ChangeKind,
 ) -> VersionResult:
     if change_kind not in {ChangeKind.REVISION, ChangeKind.FIX_PASS} or not findings:
@@ -307,35 +276,6 @@ async def revise_article(
         sc,
         article_id=article_id,
         base_version_id=base_version_id,
-        avoid=avoid,
         findings=findings,
         change_kind=change_kind,
-    )
-
-
-async def regenerate_component(
-    sc: StepContext,
-    *,
-    article_id: uuid.UUID,
-    base_version_id: uuid.UUID,
-    component: ArticleComponent,
-    section_key: SectionKey | None,
-    instructions: str | None,
-    avoid: AvoidBundle,
-) -> VersionResult:
-    if (
-        component in {ArticleComponent.ARTICLE, ArticleComponent.RESEARCH}
-        or (component == ArticleComponent.SECTION and section_key in {None, SectionKey.INTRODUCTION})
-        or (component != ArticleComponent.SECTION and section_key is not None)
-    ):
-        raise ValueError("invalid component/section combination")
-    return await _write(
-        sc,
-        article_id=article_id,
-        base_version_id=base_version_id,
-        avoid=avoid,
-        component=component,
-        section_key=section_key,
-        instructions=instructions,
-        change_kind=ChangeKind.COMPONENT_REGENERATION,
     )

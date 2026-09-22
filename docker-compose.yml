@@ -10,24 +10,27 @@ x-backend: &backend
     # The mdcopilot-backend database (same URL the root docker-compose.yml gives backend and drive).
     # Blog tables are blog_*, Alembic history is blog_alembic_versions, DBOS uses schema blog_dbos.
     DATABASE_URL: postgresql://mdcopilot_user:mdcopilot_pass@postgres:5432/mdcopilot
-  extra_hosts:
-    - "host.docker.internal:host-gateway"
+    # Service-to-service auth, development values (they match the root docker-compose.yml backend service).
+    BLOG_INTERNAL_TOKEN: local-dev-blog-token
+    BACKEND_INTERNAL_URL: http://backend:8000
+    BACKEND_INTERNAL_TOKEN: local-dev-internal-token
 
 services:
   # No database service: start the root stack (../docker-compose.yml) first; its postgres is the database.
-  migrate:
-    <<: *backend
-    command: [python, -m, mdcopilot_blog.cli, migrate]
-    restart: "no"
-
+  # Like the root backend service, the api applies migrations on startup (alembic upgrade head, DBOS system
+  # tables, seed, prompt sync; all idempotent) and only then serves. The worker waits for the api to be healthy.
   api:
     <<: *backend
-    command: [uvicorn, --factory, mdcopilot_blog.api.app:create_app, --host, 0.0.0.0, --port, "8000", --no-proxy-headers]
-    ports:
-      - "127.0.0.1:${API_HOST_PORT:-8300}:8000"
-    depends_on:
-      migrate:
-        condition: service_completed_successfully
+    command:
+      - sh
+      - -c
+      - >-
+        python -m mdcopilot_blog.cli migrate &&
+        exec uvicorn --factory mdcopilot_blog.api.app:create_app --host 0.0.0.0 --port 8000 --no-proxy-headers
+    # No host port: mdcopilot-backend is the only caller, over the shared network as http://blog-api:8000.
+    networks:
+      default:
+        aliases: [blog-api]
     restart: unless-stopped
     healthcheck:
       test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/readyz')"]
@@ -40,8 +43,8 @@ services:
     <<: *backend
     command: [python, -m, mdcopilot_blog.worker]
     depends_on:
-      migrate:
-        condition: service_completed_successfully
+      api:
+        condition: service_healthy
     restart: unless-stopped
     stop_grace_period: 60s
     healthcheck:
@@ -50,20 +53,6 @@ services:
       timeout: 5s
       retries: 6
       start_period: 90s
-
-  web:
-    image: mdcopilot-blog-web:prod
-    build:
-      context: ./frontend
-      target: prod
-    environment:
-      PUBLIC_PROXY_SCHEME: "${PUBLIC_PROXY_SCHEME:-http}"
-    ports:
-      - "127.0.0.1:${WEB_HOST_PORT:-8310}:8080"
-    depends_on:
-      api:
-        condition: service_healthy
-    restart: unless-stopped
 
 # Join the root stack network (project "mdcopilot") so "postgres" resolves to the backend database.
 networks:

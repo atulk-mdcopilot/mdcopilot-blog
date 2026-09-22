@@ -22,7 +22,7 @@ SEARCH_ATTEMPTS = 3
 SEARCH_BACKOFF_SECONDS: tuple[float, ...] = (0.5, 1.0)
 ANSWER_EXCERPT_CHARS = 1500
 
-SearchMode = Literal["broad", "deep", "verification"]
+SearchMode = Literal["deep", "verification"]
 
 
 @dataclass(frozen=True)
@@ -168,7 +168,6 @@ def outcome_signals(
                 published_at=None,
                 date_source=DateSource.NONE,
                 discovered_via=discovered_via,
-                feed_id=None,
                 external_ids={},
                 answer_excerpt=outcome.answer_excerpt,
             )
@@ -179,7 +178,6 @@ def outcome_signals(
 def query_json(outcome: QueryOutcome, *, source_count: int) -> dict[str, object]:
     return {
         "text": outcome.planned.text,
-        "themeKey": outcome.planned.theme_key,
         "status": outcome.status,
         "searchActions": outcome.search_actions,
         "sourceCount": source_count,

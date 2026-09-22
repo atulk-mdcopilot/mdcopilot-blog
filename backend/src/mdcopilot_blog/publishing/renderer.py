@@ -1,12 +1,10 @@
 """Deterministic Quill-compatible rendering; model HTML is never trusted."""
 
-import hashlib
 import html
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC
-from html.parser import HTMLParser
 from urllib.parse import quote, urlsplit
 
 import nh3
@@ -14,7 +12,7 @@ from markdown_it import MarkdownIt
 
 from mdcopilot_blog.domain.contracts import BlogSource, SEOMetadata
 from mdcopilot_blog.domain.text import CITATION_MARKER_RE, extract_markers, strip_citation_markers
-from mdcopilot_blog.publishing.base import Issue, PublishPayload
+from mdcopilot_blog.publishing.base import Issue
 
 ALLOWED_TAGS = frozenset({"h2", "h3", "p", "strong", "em", "s", "a", "ul", "ol", "li", "blockquote", "img"})
 ALLOWED_ATTRIBUTES = {"a": frozenset({"href"}), "img": frozenset({"src", "alt"})}
@@ -93,72 +91,15 @@ def render_article_html(
     return sanitize_html("".join(parts))
 
 
-class _PlainText(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.blocks: list[str] = []
-        self.current: list[str] = []
-        self.lists: list[tuple[str, int]] = []
-        self.list_lines: list[str] = []
-        self.link: tuple[str, int] | None = None
-
-    def flush(self) -> None:
-        value = re.sub(r"\s+", " ", "".join(self.current)).strip()
-        if value:
-            (self.list_lines if self.lists else self.blocks).append(value)
-        self.current = []
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        values = dict(attrs)
-        if tag in {"li", "ul", "ol"} or (tag in {"p", "h2", "h3", "blockquote"} and not self.lists):
-            self.flush()
-        if tag in {"ol", "ul"}:
-            self.lists.append((tag, 0))
-        if tag == "li":
-            kind, n = self.lists[-1] if self.lists else ("ul", 0)
-            if self.lists:
-                self.lists[-1] = (kind, n + 1)
-            self.current.append(f"{n + 1}. " if kind == "ol" else "- ")
-        if tag == "a":
-            self.link = (values.get("href") or "", len(self.current))
-        if tag == "img":
-            alt = values.get("alt") or ""
-            self.current.append(f"[image: {alt}]" if alt else "[image]")
-
-    def handle_endtag(self, tag: str) -> None:
-        if tag == "a" and self.link:
-            url, start = self.link
-            if url and url != "".join(self.current[start:]):
-                self.current.append(f" ({url})")
-            self.link = None
-        if tag in {"li", "ul", "ol"} or (tag in {"p", "h2", "h3", "blockquote"} and not self.lists):
-            self.flush()
-        elif tag in {"p", "h2", "h3", "blockquote"}:
-            self.current.append(" ")
-        if tag in {"ol", "ul"} and self.lists:
-            self.lists.pop()
-            if not self.lists and self.list_lines:
-                self.blocks.append("\n".join(self.list_lines))
-                self.list_lines = []
-
-    def handle_data(self, data: str) -> None:
-        self.current.append(data)
-
-
-def html_to_text(value: str) -> str:
-    parser = _PlainText()
-    parser.feed(value)
-    parser.flush()
-    return "\n\n".join(parser.blocks) + "\n" if parser.blocks else ""
-
-
-def compute_payload_hash(*, html: str, title: str, slug: str, excerpt: str) -> str:
-    return hashlib.sha256(f"{html}\x1f{title}\x1f{slug}\x1f{excerpt}".encode()).hexdigest()
-
-
 def _fields(title: str, slug: str | None, excerpt: str, html: str) -> list[Issue]:
     issues = []
-    for name, value, limit in [("title", title, 200), ("slug", slug or "", 200), ("excerpt", excerpt, 500)]:
+    for name, value, limit in [
+        ("title", title, TITLE_MAX_LENGTH),
+        ("slug", slug, SLUG_MAX_LENGTH),
+        ("excerpt", excerpt, EXCERPT_MAX_LENGTH),
+    ]:
+        if value is None:  # no SEO row: the slug is not sent and the backend derives one from the title
+            continue
         if not value.strip():
             issues.append(Issue(field=name, message=f"{name} is required"))
         elif len(value) > limit:
@@ -170,10 +111,6 @@ def _fields(title: str, slug: str | None, excerpt: str, html: str) -> list[Issue
     if not html.strip():
         issues.append(Issue(field="content", message="content is empty"))
     return issues
-
-
-def validate_payload(payload: PublishPayload) -> list[Issue]:
-    return _fields(payload.title, payload.slug, payload.excerpt, payload.html)
 
 
 @dataclass(frozen=True)

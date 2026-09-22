@@ -7,18 +7,15 @@ Edits from the `alembic init -t async` template:
   live in schema public with a "blog_" prefix, and the blog's history is tracked in its own version table
   "blog_alembic_versions", never the backend's alembic_version;
 - autogenerate only looks at "blog_" tables, so backend and drive tables are never proposed for removal;
-- pgvector columns render as Vector(n) with an import (later phases add vector columns);
 - a caller can pass an open sync connection in Config.attributes["connection"] (used inside event loops).
 """
 
 import asyncio
 from collections.abc import Mapping
 from logging.config import fileConfig
-from typing import Any, Literal
+from typing import Any
 
 from alembic import context
-from alembic.autogenerate.api import AutogenContext
-from pgvector.sqlalchemy import VECTOR
 from sqlalchemy import URL, pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -47,13 +44,6 @@ def get_url() -> str | URL:
     return get_settings().database_url()
 
 
-def render_item(type_: str, obj: Any, autogen_context: AutogenContext) -> str | Literal[False]:
-    if type_ == "type" and isinstance(obj, VECTOR):
-        autogen_context.imports.add("from pgvector.sqlalchemy import Vector")
-        return f"Vector({obj.dim})"
-    return False
-
-
 def include_name(name: str | None, type_: str, parent_names: Mapping[str, str | None]) -> bool:
     if type_ == "table":
         return name is not None and name.startswith(TABLE_PREFIX)
@@ -65,7 +55,6 @@ CONFIGURE_KW: dict[str, Any] = {
     "version_table": VERSION_TABLE,
     "include_name": include_name,
     "compare_server_default": True,
-    "render_item": render_item,
 }
 
 

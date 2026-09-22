@@ -1,10 +1,9 @@
-"""Price overrides for LLM, search and embedding calls."""
+"""Price overrides for LLM and search calls."""
 
-import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import CheckConstraint, ForeignKey, Index, Numeric, String, Text
+from sqlalchemy import CheckConstraint, Index, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from mdcopilot_blog.db.base import Base, CreatedAt, UUIDPk
@@ -31,4 +30,3 @@ class PriceOverride(UUIDPk, CreatedAt, Base):
     effective_from: Mapped[datetime]
     price_version: Mapped[str] = mapped_column(String(64))
     note: Mapped[str | None] = mapped_column(Text)
-    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("blog_users.id", ondelete="SET NULL"))

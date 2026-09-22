@@ -11,7 +11,7 @@ from mdcopilot_blog.db.base import Base, CreatedAt, UUIDPk
 
 
 class Review(UUIDPk, CreatedAt, Base):
-    """Insert-only review of a version (fact check, clinical, editorial, quality gate or human)."""
+    """Insert-only review of a version (fact check, clinical, editorial or quality gate)."""
 
     __tablename__ = "blog_reviews"
     __table_args__ = (
@@ -38,8 +38,6 @@ class Review(UUIDPk, CreatedAt, Base):
     agent_provider: Mapped[str | None] = mapped_column(String(32))
     agent_model: Mapped[str | None] = mapped_column(String(128))
     gate_run_kind: Mapped[str | None] = mapped_column(String(16))
-    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("blog_users.id", ondelete="SET NULL"))
-    reason: Mapped[str | None] = mapped_column(Text)
     dbos_workflow_id: Mapped[str | None] = mapped_column(String(128))
     dbos_step_id: Mapped[int | None]
 

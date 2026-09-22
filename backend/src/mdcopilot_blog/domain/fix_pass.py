@@ -13,7 +13,7 @@ class FixPassDecision(BaseModel):
     action: Literal["ready", "fix_pass", "failed"]
     seo_rerun: bool
     findings: list[RevisionFinding]
-    suggestion: Literal["regenerate_research", "change_topic", "fix_configuration"] | None
+    suggestion: Literal["regenerate_research", "fix_configuration"] | None
 
 
 def decide_fix_pass(report: GateReport, *, fix_pass_used: bool) -> FixPassDecision:
@@ -28,7 +28,6 @@ def decide_fix_pass(report: GateReport, *, fix_pass_used: bool) -> FixPassDecisi
             value
             for key, value in (
                 ("sources_present", "regenerate_research"),
-                ("no_duplicate_topic", "change_topic"),
                 ("disclosure_present", "fix_configuration"),
             )
             if any(r.gate == key for r in failed)

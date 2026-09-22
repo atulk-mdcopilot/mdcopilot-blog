@@ -1,42 +1,10 @@
 """Domain enumerations.
 
-The values are the stored and wire representation: status columns are ``String(32)`` holding ``.value``,
-and the frontend mirrors the ``Role`` and ``Permission`` values in ``src/features/auth/permissions.ts``.
+The values are the stored and wire representation: status columns are ``String(32)`` holding ``.value``.
 Member names are UPPER_CASE for every enum; values keep the case shown here.
 """
 
 from enum import StrEnum
-
-
-class Role(StrEnum):
-    """User roles, least to most privileged."""
-
-    VIEWER = "viewer"
-    EDITOR = "editor"
-    REVIEWER = "reviewer"
-    PUBLISHER = "publisher"
-    ADMIN = "admin"
-
-
-class Permission(StrEnum):
-    """Permissions checked by the API."""
-
-    VIEW = "blog.view"
-    GENERATE = "blog.generate"
-    EDIT = "blog.edit"
-    REVIEW = "blog.review"
-    APPROVE = "blog.approve"
-    SCHEDULE = "blog.schedule"
-    PUBLISH = "blog.publish"
-    AGENT_RUNS = "blog.agent_runs"
-    SETTINGS = "blog.settings"
-
-
-class RunKind(StrEnum):
-    """How a run was started."""
-
-    DAILY = "daily"
-    MANUAL = "manual"
 
 
 class RunStatus(StrEnum):
@@ -45,7 +13,6 @@ class RunStatus(StrEnum):
     QUEUED = "QUEUED"
     RESEARCHING = "RESEARCHING"
     TOPICS_READY = "TOPICS_READY"
-    WAITING_FOR_TOPIC = "WAITING_FOR_TOPIC"
     PRODUCING = "PRODUCING"
     SUCCEEDED = "SUCCEEDED"
     FAILED = "FAILED"
@@ -78,27 +45,7 @@ class ArticleStatus(StrEnum):
     CLINICAL_REVIEW = "CLINICAL_REVIEW"
     EDITORIAL_REVIEW = "EDITORIAL_REVIEW"
     SEO = "SEO"
-    READY_FOR_REVIEW = "READY_FOR_REVIEW"
-    QUALITY_GATE_FAILED = "QUALITY_GATE_FAILED"
-    APPROVED = "APPROVED"
-    SCHEDULED = "SCHEDULED"
-    EXPORTED = "EXPORTED"
-    PUBLISHING = "PUBLISHING"
-    PUBLISHED = "PUBLISHED"
-    PUBLISH_FAILED = "PUBLISH_FAILED"
-    REJECTED = "REJECTED"
-    FAILED = "FAILED"
-    SUPERSEDED = "SUPERSEDED"
-
-
-class PublicationStatus(StrEnum):
-    """``blog_publications.status``."""
-
-    PENDING = "PENDING"
-    EXPORTED = "EXPORTED"
-    CONFIRMED = "CONFIRMED"
-    IN_PROGRESS = "IN_PROGRESS"
-    PUBLISHED = "PUBLISHED"
+    DRAFT_SAVED = "DRAFT_SAVED"
     FAILED = "FAILED"
 
 
@@ -107,7 +54,6 @@ class CallKind(StrEnum):
 
     AGENT = "agent"
     SEARCH = "search"
-    EMBEDDING = "embedding"
 
 
 class CallStatus(StrEnum):
@@ -121,8 +67,6 @@ class AgentName(StrEnum):
     """Route keys for the LLM gateway."""
 
     SEARCH = "search"
-    RESEARCH = "research"
-    IDEATION = "ideation"
     DEEP_RESEARCH = "deep_research"
     WRITER = "writer"
     FACT_CHECK = "fact_check"
@@ -131,22 +75,9 @@ class AgentName(StrEnum):
     SEO = "seo"
 
 
-class CandidateStatus(StrEnum):
-    """``blog_topic_candidates.status``."""
-
-    PROPOSED = "PROPOSED"
-    PASSED = "PASSED"
-    WARNED = "WARNED"
-    REJECTED = "REJECTED"
-    SELECTED = "SELECTED"
-    DISMISSED = "DISMISSED"
-    SUPERSEDED = "SUPERSEDED"
-
-
 class ResearchRunKind(StrEnum):
     """``blog_research_runs.kind``."""
 
-    BROAD = "broad"
     DEEP = "deep"
     VERIFICATION = "verification"
 
@@ -172,7 +103,6 @@ class AccessMode(StrEnum):
 class DateSource(StrEnum):
     """``blog_sources.date_source``: where the publication date came from."""
 
-    FEED = "feed"
     API = "api"
     JSONLD = "jsonld"
     META = "meta"
@@ -193,23 +123,8 @@ class FetchStatus(StrEnum):
 class DiscoveredVia(StrEnum):
     """``blog_sources.discovered_via``."""
 
-    FEED = "feed"
-    PUBMED = "pubmed"
-    FEDERAL_REGISTER = "federal_register"
-    FDA_CSV = "fda_csv"
-    SEARCH = "search"
     DEEP_SEARCH = "deep_search"
     VERIFICATION = "verification"
-
-
-class FeedKind(StrEnum):
-    """``blog_source_feeds.kind``."""
-
-    RSS = "rss"
-    ATOM = "atom"
-    PUBMED = "pubmed"
-    FEDERAL_REGISTER = "federal_register"
-    FDA_AI_DEVICES_CSV = "fda_ai_devices_csv"
 
 
 class ReviewVerdict(StrEnum):
@@ -222,9 +137,6 @@ class ReviewVerdict(StrEnum):
     COMPLETED = "COMPLETED"
     PASSED = "PASSED"
     FAILED = "FAILED"
-    APPROVED = "APPROVED"
-    OVERRIDE_APPROVED = "OVERRIDE_APPROVED"
-    REJECTED = "REJECTED"
 
 
 class GateRunKind(StrEnum):
@@ -232,8 +144,6 @@ class GateRunKind(StrEnum):
 
     FULL = "full"
     FIX_PASS = "fix_pass"
-    DETERMINISTIC = "deterministic"
-    RECHECK = "recheck"
 
 
 class ChangeKind(StrEnum):
@@ -242,9 +152,6 @@ class ChangeKind(StrEnum):
     DRAFT = "draft"
     REVISION = "revision"
     FIX_PASS = "fix_pass"
-    HUMAN_EDIT = "human_edit"
-    COMPONENT_REGENERATION = "component_regeneration"
-    ARTICLE_REGENERATION = "article_regeneration"
 
 
 class SectionKey(StrEnum):
@@ -257,55 +164,6 @@ class SectionKey(StrEnum):
     MDCOPILOT_PERSPECTIVE = "mdcopilot_perspective"
     PRACTICAL_IMPLICATIONS = "practical_implications"
     CONCLUSION = "conclusion"
-
-
-class ArticleComponent(StrEnum):
-    """Regenerable parts of an article."""
-
-    HEADLINE = "headline"
-    INTRODUCTION = "introduction"
-    SECTION = "section"
-    PULL_QUOTE = "pull_quote"
-    CTA = "cta"
-    ARTICLE = "article"
-    RESEARCH = "research"
-
-
-class TitleKey(StrEnum):
-    """Keys of ``TitleOptions``."""
-
-    PROVOCATIVE = "provocative"
-    OPERATIONAL = "operational"
-    VISIONARY = "visionary"
-    CUSTOM = "custom"
-
-
-class ApprovalMode(StrEnum):
-    """``blog_articles.approval_mode``."""
-
-    DRAFT = "draft"
-    PUBLISH = "publish"
-
-
-class PublisherKey(StrEnum):
-    """``BLOG_PUBLISHER`` values."""
-
-    MANUAL_EXPORT = "manual_export"
-    MDCOPILOT_API = "mdcopilot_api"
-
-
-class HeadlinePattern(StrEnum):
-    """``blog_version_features.headline_pattern``."""
-
-    QUESTION = "question"
-    HOW_TO = "how_to"
-    WHY = "why"
-    WHAT_IF = "what_if"
-    NUMBER_LIST = "number_list"
-    COLON_SPLIT = "colon_split"
-    VERSUS = "versus"
-    IMPERATIVE = "imperative"
-    STATEMENT = "statement"
 
 
 class ClinicalFlagCode(StrEnum):
@@ -321,17 +179,15 @@ class ClinicalFlagCode(StrEnum):
 
 
 class GateId(StrEnum):
-    """Quality gates in display order (first 15 blocking, last 4 warnings)."""
+    """Quality gates in display order. Severity is set in ``domain.gates.WARNING_GATES``, not by position."""
 
     SOURCES_PRESENT = "sources_present"
     CLAIMS_VERIFIED = "claims_verified"
     NO_UNSUPPORTED_STATISTICS = "no_unsupported_statistics"
     NO_FABRICATED_QUOTES = "no_fabricated_quotes"
     NO_UNSOURCED_ANECDOTES = "no_unsourced_anecdotes"
-    NO_DUPLICATE_TOPIC = "no_duplicate_topic"
     WORD_COUNT = "word_count"
     REQUIRED_STRUCTURE = "required_structure"
-    CTA_FRESH = "cta_fresh"
     NO_PROHIBITED_LANGUAGE = "no_prohibited_language"
     SEO_COMPLETE = "seo_complete"
     FACT_CHECK_PASSED = "fact_check_passed"
@@ -339,6 +195,3 @@ class GateId(StrEnum):
     EDITORIAL_COMPLETED = "editorial_completed"
     DISCLOSURE_PRESENT = "disclosure_present"
     INDEPENDENT_FACT_CHECK = "independent_fact_check"
-    OPENING_DIVERSITY = "opening_diversity"
-    HEADLINE_DIVERSITY = "headline_diversity"
-    SOURCE_DOMAIN_DIVERSITY = "source_domain_diversity"

@@ -13,8 +13,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.alias_generators import to_camel
 
 from mdcopilot_blog.domain.enums import (
-    ApprovalMode,
-    ArticleComponent,
     SectionKey,
 )
 from mdcopilot_blog.domain.text import ATX_HEADING_RE
@@ -55,14 +53,6 @@ class SourceType(StrEnum):
     OTHER = "other"
 
 
-class ClaimType(StrEnum):
-    FACT = "FACT"
-    ANALYSIS = "ANALYSIS"
-    OPINION = "OPINION"
-    PREDICTION = "PREDICTION"
-    MARKETING_CLAIM = "MARKETING_CLAIM"
-
-
 class VerificationStatus(StrEnum):
     SUPPORTED = "SUPPORTED"
     PARTIALLY_SUPPORTED = "PARTIALLY_SUPPORTED"
@@ -84,12 +74,6 @@ class ClaimKind(StrEnum):
     OPINION = "opinion"
 
 
-class NoveltyDecision(StrEnum):
-    PASS = "PASS"
-    WARN = "WARN"
-    REJECT_TOPIC = "REJECT_TOPIC"
-
-
 class PillarKey(StrEnum):
     A = "A"
     B = "B"
@@ -99,42 +83,7 @@ class PillarKey(StrEnum):
     NARRATIVE = "NARRATIVE"
 
 
-# --- research --------------------------------------------------------------------------------------------------
-
-
-# --- topics and novelty ----------------------------------------------------------------------------------------
-
-
-class NewsRef(Contract):
-    title: str
-    url: str
-    published_at: datetime | None
-
-
-class ScoreItem(Contract):
-    """One component of a topic score."""
-
-    weight: UnitScore
-    score: UnitScore
-    justification: str
-
-
-class NoveltyNeighbour(Contract):
-    """One of the nearest stored items to a candidate."""
-
-    kind: str
-    ref_id: str
-    title: str
-    similarity: UnitScore
-
-
-class NoveltyResult(Contract):
-    decision: NoveltyDecision
-    max_similarity: UnitScore
-    neighbours: list[NoveltyNeighbour]
-
-
-# --- article parts ---------------------------------------------------------------------------------------------
+# --- articles ---------------------------------------------------------------------------------------------------
 
 
 class TitleOptions(Contract):
@@ -326,33 +275,6 @@ class ArticleDraft(Contract):
         return self
 
 
-class ComponentDraft(Contract):
-    component: ArticleComponent
-    section_key: SectionKey | None
-    title_options: TitleOptions | None
-    section: ArticleSection | None
-    pull_quote: str | None
-    cta: str | None
-
-    @model_validator(mode="after")
-    def _check_component_field_rule(self) -> "ComponentDraft":
-        if self.component in (ArticleComponent.ARTICLE, ArticleComponent.RESEARCH):
-            raise ValueError("component article/research has no draft field")
-        matching = {
-            ArticleComponent.HEADLINE: self.title_options,
-            ArticleComponent.INTRODUCTION: self.section,
-            ArticleComponent.SECTION: self.section,
-            ArticleComponent.PULL_QUOTE: self.pull_quote,
-            ArticleComponent.CTA: self.cta,
-        }[self.component]
-        present = [
-            value for value in (self.title_options, self.section, self.pull_quote, self.cta) if value is not None
-        ]
-        if len(present) != 1 or matching is None:
-            raise ValueError("exactly the field matching component must be set")
-        return self
-
-
 class RevisionFinding(Contract):
     finding_id: str
     origin: Literal["claim_check", "clinical_flag", "editorial_change", "quality_gate"]
@@ -362,32 +284,6 @@ class RevisionFinding(Contract):
     required: bool
 
 
-class RecentArticleRef(Contract):
-    title: str
-    core_argument: str
-    opening_sentence: str
-
-
-class AvoidBundle(Contract):
-    recent_articles: list[RecentArticleRef]
-    recent_titles: list[str]
-    recent_openings: list[str]
-    recent_ctas: list[str]
-    recent_primary_sources: list[str]
-    overused_phrases: list[str]
-    prohibited_language: list[str]
-
-
 class SeoPackage(Contract):
     seo: SEOMetadata
     social: SocialCopy
-
-
-class HumanDecision(Contract):
-    decision: Literal["APPROVED", "OVERRIDE_APPROVED", "REJECTED"]
-    mode: ApprovalMode | None
-    reason: str | None
-    version_id: str
-
-
-# --- article view ----------------------------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-"""Writes one ``blog_llm_calls`` row per model/search/embedding attempt, in its own transaction."""
+"""Writes one ``blog_llm_calls`` row per model or search attempt, in its own transaction."""
 
 from __future__ import annotations
 
@@ -8,12 +8,11 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from mdcopilot_blog.db.models import LlmCall, RunAttempt
+from mdcopilot_blog.db.models import LlmCall
 from mdcopilot_blog.domain.enums import CallKind, CallStatus
-from mdcopilot_blog.workflows.names import HUMAN_ACTION_WORKFLOWS
 
 if TYPE_CHECKING:
     from mdcopilot_blog.llm.gateway import CallContext
@@ -102,36 +101,8 @@ class CallRecorder:
         return row.id
 
     async def budget_spent(self, ctx: CallContext) -> Decimal:
-        """Spend under the budget scope of ``ctx``.
-
-        A human-action attempt is its own scope; everything else on a run shares the run scope,
-        counting only calls that do not belong to a human-action attempt.
-        """
-        async with self._sessionmaker() as session:
-            if ctx.attempt_id is not None:
-                workflow_name = await session.scalar(
-                    select(RunAttempt.workflow_name).where(RunAttempt.id == ctx.attempt_id)
-                )
-                if workflow_name in HUMAN_ACTION_WORKFLOWS:
-                    total = await session.scalar(
-                        select(func.coalesce(func.sum(LlmCall.cost_usd), 0)).where(LlmCall.attempt_id == ctx.attempt_id)
-                    )
-                    return Decimal(str(total))
-            if ctx.run_id is not None:
-                total = await session.scalar(
-                    select(func.coalesce(func.sum(LlmCall.cost_usd), 0))
-                    .select_from(LlmCall)
-                    .outerjoin(RunAttempt, RunAttempt.id == LlmCall.attempt_id)
-                    .where(
-                        LlmCall.run_id == ctx.run_id,
-                        or_(
-                            RunAttempt.workflow_name.is_(None),
-                            RunAttempt.workflow_name.not_in(sorted(HUMAN_ACTION_WORKFLOWS)),
-                        ),
-                    )
-                )
-                return Decimal(str(total))
-        return Decimal(0)
+        """Spend under the budget scope of ``ctx``: every call of a run shares the run budget."""
+        return await self.run_cost(ctx.run_id)
 
     async def run_cost(self, run_id: uuid.UUID | None) -> Decimal:
         """Total recorded cost for a run; 0 when ``run_id`` is None."""

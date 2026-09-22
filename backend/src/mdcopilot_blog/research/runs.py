@@ -43,7 +43,6 @@ async def open_research_run(
         "pillar_key": pillar_key,
         "window_days": window_days,
         "queries": [],
-        "themes_covered": [],
         "signals": [],
         "source_ids": [],
         "phase_latency_ms": {},

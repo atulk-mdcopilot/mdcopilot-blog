@@ -1,23 +1,31 @@
 """Focused source discovery and bounded allow-listed verification."""
 
 import uuid
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Sequence
 from time import perf_counter
 from typing import Literal
 
 from pydantic import BaseModel
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from mdcopilot_blog.agents.common import PromptSource, order_sources
+from mdcopilot_blog.agents.common import order_sources
 from mdcopilot_blog.db.models import Article, LedgerSource, TopicCandidateRecord
 from mdcopilot_blog.domain.enums import DiscoveredVia, ResearchRunKind, ResearchRunStatus
 from mdcopilot_blog.domain.errors import InsufficientEvidence
 from mdcopilot_blog.domain.query_plan import PlannedQuery, plan_deep_queries
 from mdcopilot_blog.domain.tiers import keyword_set
 from mdcopilot_blog.domain.urls import canonicalize_url, host_of
-from mdcopilot_blog.research.broad import require_evidence, retrieve_run_sources
 from mdcopilot_blog.research.catalog import load_domain_rules, load_pillar
 from mdcopilot_blog.research.environment import open_environment
+from mdcopilot_blog.research.ledger import (
+    StageTimer,
+    load_existing,
+    merge_signals,
+    retrieve,
+    select_candidates,
+    upsert_sources,
+)
 from mdcopilot_blog.research.runs import (
     error_payload,
     get_research_run,
@@ -27,7 +35,7 @@ from mdcopilot_blog.research.runs import (
     query_status_counts,
 )
 from mdcopilot_blog.research.search import outcome_signals, query_json, run_search_queries
-from mdcopilot_blog.services.config import local_date
+from mdcopilot_blog.research.signals import Signal
 from mdcopilot_blog.services.step_context import StepContext
 
 MAX_PACKET_SOURCES = 20
@@ -43,29 +51,83 @@ class VerificationResult(BaseModel):
     source_ids_by_query: dict[int, list[uuid.UUID]]
 
 
-def compose_packet_sources(
-    *,
-    new_ids: Sequence[uuid.UUID],
-    candidate_ids: Sequence[uuid.UUID],
-    primary_id: uuid.UUID | None,
-    avoid: Collection[uuid.UUID],
-    rows: Mapping[uuid.UUID, PromptSource],
-    min_dated: int,
-    limit: int = MAX_PACKET_SOURCES,
+async def retrieve_run_sources(
+    sc: StepContext, *, research_run_id: uuid.UUID, keywords: frozenset[str]
 ) -> list[uuid.UUID]:
-    pool = list(dict.fromkeys([*new_ids, *candidate_ids]))
-    pool = [x for x in pool if x in rows]
-    excluded = set(avoid) - {primary_id}
-    chosen = ([primary_id] if primary_id is not None and primary_id in rows else []) + [
-        x for x in pool if x != primary_id and x not in excluded
-    ]
-    chosen = chosen[:limit]
-    for row in order_sources([rows[x] for x in pool if x in excluded]):
-        if len(chosen) >= limit or sum(rows[x].published_at is not None for x in chosen) >= min_dated:
-            break
-        if row.published_at is not None:
-            chosen.append(row.id)
-    return [row.id for row in order_sources([rows[x] for x in chosen])]
+    async with sc.sessionmaker() as db:
+        run = await get_research_run(db, research_run_id)
+        rules = await load_domain_rules(db)
+        candidates = select_candidates(
+            merge_signals([Signal.from_json(s) for s in run.signals]),
+            rules=rules,
+            keywords=keywords,
+            now=sc.now(),
+            window_days=run.window_days,
+        )
+        existing = await load_existing(db, [c.url_hash for c in candidates])
+    start, timer = perf_counter(), StageTimer()
+    async with open_environment(sc) as env:
+        items = await retrieve(
+            env,
+            candidates,
+            existing=existing,
+            keywords=keywords,
+            now=sc.now(),
+            window_days=run.window_days,
+            timer=timer,
+        )
+    async with sc.sessionmaker() as db:
+        # Reattach reused rows before refreshing their snapshots.
+        existing = await load_existing(db, [c.url_hash for c in candidates])
+        outcomes = await upsert_sources(db, items, existing=existing, research_run_id=research_run_id)
+        ids = list(dict.fromkeys(o.source_id for o in outcomes))
+        rows = order_sources((await db.scalars(select(LedgerSource).where(LedgerSource.id.in_(ids)))).all())
+        run = await get_research_run(db, research_run_id, for_update=True)
+        run.source_ids = [str(row.id) for row in rows]
+        run.counts = merged(
+            run.counts,
+            urlsFetched=sum(o.fetched for o in outcomes),
+            sourcesNew=sum(o.created for o in outcomes),
+            sourcesTotal=len(rows),
+            sourcesBlocked=sum(o.fetch_status.value in {"blocked", "robots_disallowed"} for o in outcomes),
+        )
+        run.phase_latency_ms = merged(
+            run.phase_latency_ms, retrieval=int((perf_counter() - start) * 1000), extraction=timer.extraction_ms
+        )
+        await db.commit()
+        return [row.id for row in rows]
+
+
+async def ledger_stats(db: AsyncSession, source_ids: Sequence[uuid.UUID]) -> tuple[int, int]:
+    """(dated sources, tier 1-2 sources with text)."""
+    rows = (await db.scalars(select(LedgerSource).where(LedgerSource.id.in_(source_ids)))).all()
+    return (
+        sum(r.published_at is not None for r in rows),
+        sum(r.tier <= 2 and r.access_mode in {"full_text", "abstract_only"} for r in rows),
+    )
+
+
+async def require_evidence(sc: StepContext, research_run_id: uuid.UUID, *, required_queries: int) -> tuple[int, int]:
+    async with sc.sessionmaker() as db:
+        run = await get_research_run(db, research_run_id)
+        dated, tier12 = await ledger_stats(db, [uuid.UUID(x) for x in run.source_ids])
+        ok, _ = query_status_counts(run)
+    if dated < sc.config.research.min_source_count or ok < required_queries or tier12 < 1:
+        exc = InsufficientEvidence(str(research_run_id), dated, sc.config.research.min_source_count, ok)
+        await mark_run(
+            sc.sessionmaker,
+            research_run_id,
+            status=ResearchRunStatus.INSUFFICIENT_EVIDENCE,
+            error={
+                **error_payload(exc),
+                "foundSources": dated,
+                "requiredSources": sc.config.research.min_source_count,
+                "successfulQueries": ok,
+            },
+            now=sc.now(),
+        )
+        raise exc
+    return dated, tier12
 
 
 async def store_search(
@@ -107,14 +169,12 @@ async def store_search(
         run = await get_research_run(db, research_run_id, for_update=True)
         run.signals = [s.to_json() for group in groups for s in group]
         run.queries = [query_json(o, source_count=len(group)) for o, group in zip(outcomes, groups, strict=True)]
-        run.counts = merged(run.counts, feedItems=0, searchResults=sum(len(g) for g in groups))
+        run.counts = merged(run.counts, searchResults=sum(len(g) for g in groups))
         run.phase_latency_ms = merged(run.phase_latency_ms, search=int((perf_counter() - start) * 1000))
         await db.commit()
 
 
-async def run_deep_research(
-    sc: StepContext, *, article_id: uuid.UUID, candidate_id: uuid.UUID, avoid_source_ids: Sequence[uuid.UUID] = ()
-) -> DeepResearchResult:
+async def run_deep_research(sc: StepContext, *, article_id: uuid.UUID, candidate_id: uuid.UUID) -> DeepResearchResult:
     async with sc.sessionmaker() as db:
         article = await db.get(Article, article_id)
         candidate = await db.get(TopicCandidateRecord, candidate_id)
@@ -146,30 +206,15 @@ async def run_deep_research(
             title=candidate.title,
             thesis=candidate.thesis,
             pillar_name=pillar.name if pillar else None,
-            today=local_date(sc.now(), sc.config.schedule.timezone),
+            today=sc.now().date(),
             deep_queries=min(sc.config.research.deep_queries, 8),
         )
         await store_search(sc, handle.id, planned, mode="deep", article_id=article_id)
         new_ids = await retrieve_run_sources(
             sc, research_run_id=handle.id, keywords=keyword_set([candidate.title, candidate.thesis, candidate.angle])
         )
-        candidate_ids = []
-        for value in candidate.source_ids:
-            try:
-                candidate_ids.append(uuid.UUID(value))
-            except ValueError:
-                continue
+        final = new_ids[:MAX_PACKET_SOURCES]  # already in order_sources order
         async with sc.sessionmaker() as db:
-            ids = [*new_ids, *candidate_ids] + ([candidate.primary_source_id] if candidate.primary_source_id else [])
-            rows = {r.id: r for r in await db.scalars(select(LedgerSource).where(LedgerSource.id.in_(ids)))}
-            final = compose_packet_sources(
-                new_ids=new_ids,
-                candidate_ids=candidate_ids,
-                primary_id=candidate.primary_source_id,
-                avoid=avoid_source_ids,
-                rows=rows,
-                min_dated=sc.config.research.min_source_count,
-            )
             run = await get_research_run(db, handle.id, for_update=True)
             run.source_ids = [str(x) for x in final]
             run.counts = merged(run.counts, sourcesTotal=len(final))
@@ -181,9 +226,7 @@ async def run_deep_research(
         await require_evidence(
             sc,
             handle.id,
-            require_window=False,
             required_queries=min(len(planned), sc.config.research.min_successful_queries),
-            require_text=True,
         )
         await mark_run(
             sc.sessionmaker,
@@ -228,7 +271,7 @@ async def verification_lookup(sc: StepContext, *, article_id: uuid.UUID, queries
         async with sc.sessionmaker() as db:
             run = await get_research_run(db, handle.id)
         if run.status not in {"succeeded", "partial", "failed"}:
-            planned = [PlannedQuery(text=q, theme_key=None, facet=None) for _, q in indexed]
+            planned = [PlannedQuery(text=q, facet=None) for _, q in indexed]
             await store_search(
                 sc, handle.id, planned, mode="verification", article_id=article_id, allowed_domains=allow
             )

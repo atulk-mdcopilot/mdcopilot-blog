@@ -20,8 +20,6 @@ _PROVIDERS: Mapping[str, Provider] = {
 
 _ROUTE_GETTERS: Mapping[AgentName, Callable[[Settings], list[str]]] = {
     AgentName.SEARCH: lambda s: s.search_route,
-    AgentName.RESEARCH: lambda s: s.research_route,
-    AgentName.IDEATION: lambda s: s.ideation_route,
     AgentName.DEEP_RESEARCH: lambda s: s.deep_research_route,
     AgentName.WRITER: lambda s: s.writer_route,
     AgentName.FACT_CHECK: lambda s: s.fact_check_route,

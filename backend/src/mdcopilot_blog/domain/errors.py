@@ -50,17 +50,6 @@ class UnknownCitationMarker(DomainError):
         return f"unknown markers: {', '.join(self.markers)}"
 
 
-class PublishingDisabled(DomainError):
-    """A network publish was attempted while publishing is disabled."""
-
-    def __init__(self, message: str) -> None:
-        super().__init__(message)
-        self.message = message
-
-    def __str__(self) -> str:
-        return self.message
-
-
 class OutputRejected(DomainError):
     """An ``output_check`` rejected an agent output; the gateway turns this into a model retry."""
 

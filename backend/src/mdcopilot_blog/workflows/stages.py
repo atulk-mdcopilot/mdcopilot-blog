@@ -1,4 +1,4 @@
-"""Fork-aware step contexts, transitions, cancellation and failure bookkeeping."""
+"""Step contexts, transitions, cancellation and failure bookkeeping."""
 
 import asyncio
 import contextlib
@@ -17,7 +17,7 @@ from mdcopilot_blog.domain.state_machine import Entity, InvalidTransition, can_t
 from mdcopilot_blog.logs import bind_log_context
 from mdcopilot_blog.services.article_status import set_article_status
 from mdcopilot_blog.services.step_context import StepContext, build_step_context
-from mdcopilot_blog.workflows.names import HUMAN_ACTION_WORKFLOWS, KNOWN_STEP_NAMES
+from mdcopilot_blog.workflows.names import KNOWN_STEP_NAMES, WORKFLOW_DISCOVER_TOPICS
 from mdcopilot_blog.workflows.retry import WorkflowCancelledError, step_options
 from mdcopilot_blog.workflows.runtime import get_runtime
 from mdcopilot_blog.workflows.tracking import (
@@ -32,13 +32,10 @@ from mdcopilot_blog.workflows.tracking import (
 
 STOP: dict[str, Any] = {"cancelled": True}
 KNOWN_STEPS = KNOWN_STEP_NAMES
-PROTECTED_ARTICLE_STATUSES = frozenset(
-    {"APPROVED", "SCHEDULED", "EXPORTED", "PUBLISHING", "PUBLISHED", "PUBLISH_FAILED", "REJECTED", "SUPERSEDED"}
-)
 
 
 class StaleWorkflowError(RuntimeError):
-    """A newer edit or human decision makes this workflow's output obsolete."""
+    """The article moved on (a newer version or attempt), so this workflow's output is obsolete."""
 
 
 @dataclass(frozen=True)
@@ -57,18 +54,15 @@ async def advance_run(run_id: uuid.UUID, target: RunStatus, stage: str | None = 
         current = await get_run_status(sm, run_id)
         if current == RunStatus.CANCELLED:
             return False
-        if current == target:
+        if current == RunStatus.SUCCEEDED and target == RunStatus.PRODUCING:
+            return True  # push_draft re-executed after it already succeeded; its body is idempotent
+        if current == target and stage is None:
             return True
-        next_status = target
-        if not can_transition(Entity.RUN, current, target):
-            if current in {RunStatus.SUCCEEDED, RunStatus.FAILED}:
-                next_status = RunStatus.QUEUED
-            elif current == RunStatus.QUEUED and target in {RunStatus.TOPICS_READY, RunStatus.WAITING_FOR_TOPIC}:
-                next_status = RunStatus.RESEARCHING
-            elif current == RunStatus.RESEARCHING and target == RunStatus.WAITING_FOR_TOPIC:
-                next_status = RunStatus.TOPICS_READY
         try:
-            await set_run_status(sm, run_id=run_id, target=next_status, stage=stage if next_status == target else None)
+            # Same status with a stage only records the new stage (the progress label on the Generate page).
+            await set_run_status(sm, run_id=run_id, target=target, stage=stage)
+            if current == target:
+                return True
         except InvalidTransition:
             if await get_run_status(sm, run_id) == RunStatus.CANCELLED:
                 return False
@@ -92,8 +86,6 @@ async def advance_article(
         raise LookupError(f"article {article_id} not found")
     if version_id is not None and article.current_version_id != uuid.UUID(version_id):
         raise StaleWorkflowError("article version changed while this workflow was running")
-    if article.status in PROTECTED_ARTICLE_STATUSES:
-        raise StaleWorkflowError(f"article is now {article.status}")
     forward = {
         "DRAFTING": ArticleStatus.FACT_CHECKING,
         "FACT_CHECKING": ArticleStatus.CLINICAL_REVIEW,
@@ -111,8 +103,6 @@ async def advance_article(
                 ArticleStatus.CLINICAL_REVIEW,
                 ArticleStatus.EDITORIAL_REVIEW,
                 ArticleStatus.SEO,
-                ArticleStatus.READY_FOR_REVIEW,
-                ArticleStatus.QUALITY_GATE_FAILED,
             }:
                 next_status = forward[current]
         await set_article_status(db, article_id=article_id, target=next_status)
@@ -121,7 +111,7 @@ async def advance_article(
 async def tracked_stage(
     step_name: str,
     *,
-    run_id: str | None,
+    run_id: str,
     workflow_name: str,
     body: Callable[[StageContext], Awaitable[dict[str, Any]]],
     article_id: str | None = None,
@@ -136,23 +126,10 @@ async def tracked_stage(
         workflow_id = DBOS.workflow_id
         if workflow_id is None:
             raise RuntimeError("step must run inside a workflow")
-        if run_id is None:
-            async with rt.sessionmaker() as db:
-                rid = await db.scalar(select(Article.run_id).where(Article.id == uuid.UUID(str(article_id))))
-            if rid is None:
-                raise LookupError(f"article {article_id} not found")
-        else:
-            rid = uuid.UUID(run_id)
-        human = workflow_name in HUMAN_ACTION_WORKFLOWS
-        aid = await ensure_attempt(
-            rt.sessionmaker,
-            run_id=rid,
-            workflow_id=workflow_id,
-            workflow_name=workflow_name,
-            respect_run_cancel=not human,
-        )
+        rid = uuid.UUID(run_id)
+        aid = await ensure_attempt(rt.sessionmaker, run_id=rid, workflow_id=workflow_id, workflow_name=workflow_name)
         if await get_attempt_status(rt.sessionmaker, workflow_id) == AttemptStatus.CANCELLED or (
-            not human and await get_run_status(rt.sessionmaker, rid) == RunStatus.CANCELLED
+            await get_run_status(rt.sessionmaker, rid) == RunStatus.CANCELLED
         ):
             await finish_attempt(rt.sessionmaker, workflow_id=workflow_id, status=AttemptStatus.CANCELLED)
             return STOP
@@ -172,7 +149,7 @@ async def tracked_stage(
                 sc = sc.with_ids(article_id=uuid.UUID(article_id))
             output = await body(StageContext(sc, rid, aid, workflow_id, step_name, trace_id))
             if await get_attempt_status(rt.sessionmaker, workflow_id) == AttemptStatus.CANCELLED or (
-                not human and await get_run_status(rt.sessionmaker, rid) == RunStatus.CANCELLED
+                await get_run_status(rt.sessionmaker, rid) == RunStatus.CANCELLED
             ):
                 await finish_attempt(rt.sessionmaker, workflow_id=workflow_id, status=AttemptStatus.CANCELLED)
                 return STOP
@@ -184,31 +161,42 @@ async def tracked_stage(
 async def fail_workflow(
     *,
     workflow_name: str,
-    run_id: str | None,
+    run_id: str,
     article_id: str | None,
     error: BaseException,
-    version_id: str | None = None,
 ) -> None:
     rt = get_runtime()
     workflow_id = DBOS.workflow_id
     if not workflow_id:
         return
+    payload = {"class": type(error).__name__, "message": str(error)[:2000]}
+    timed_out = False
     if (
         isinstance(error, (WorkflowCancelledError, asyncio.CancelledError))
         or await get_attempt_status(rt.sessionmaker, workflow_id) == AttemptStatus.CANCELLED
     ):
-        await finish_attempt(rt.sessionmaker, workflow_id=workflow_id, status=AttemptStatus.CANCELLED)
-        return
-    payload = {"class": type(error).__name__, "message": str(error)[:2000]}
+        # A DBOS deadline (SetWorkflowTimeout) arrives as the same error as a user cancel, but nobody writes a
+        # terminal status for it: the run would stay PRODUCING forever. cancel_run cancels in DBOS first and
+        # commits CANCELLED right after, so give that commit a moment before deciding this was a timeout.
+        # asyncio.CancelledError is a worker shutdown: DBOS resumes that workflow on restart.
+        if isinstance(error, WorkflowCancelledError):
+            await asyncio.sleep(1)
+            timed_out = (
+                await get_attempt_status(rt.sessionmaker, workflow_id) != AttemptStatus.CANCELLED
+                and await get_run_status(rt.sessionmaker, uuid.UUID(run_id)) != RunStatus.CANCELLED
+            )
+        if not timed_out:
+            await finish_attempt(rt.sessionmaker, workflow_id=workflow_id, status=AttemptStatus.CANCELLED)
+            return
+        payload = {"class": "WorkflowTimeout", "message": f"{workflow_name} exceeded its time limit"}
 
     async def failed() -> None:
-        rid = uuid.UUID(run_id) if run_id else None
+        rid = uuid.UUID(run_id)
         stale = isinstance(error, StaleWorkflowError)
         async with rt.sessionmaker() as db:
             attempt = await db.scalar(select(RunAttempt).where(RunAttempt.dbos_workflow_id == workflow_id))
             if attempt is None or attempt.status == "CANCELLED":
                 return
-            rid = rid or attempt.run_id
             newer = await db.scalar(
                 select(RunAttempt.id)
                 .where(RunAttempt.run_id == rid, RunAttempt.attempt_no > attempt.attempt_no)
@@ -220,26 +208,16 @@ async def fail_workflow(
                 if article_id
                 else None
             )
-            if article is not None:
-                stale = stale or (version_id is not None and str(article.current_version_id) != version_id)
-                target = ArticleStatus.PUBLISH_FAILED if article.status == "PUBLISHING" else ArticleStatus.FAILED
-                if not stale and can_transition(Entity.ARTICLE, article.status, target):
-                    await set_article_status(db, article_id=article.id, target=target)
+            if article and not stale and can_transition(Entity.ARTICLE, article.status, ArticleStatus.FAILED):
+                await set_article_status(db, article_id=article.id, target=ArticleStatus.FAILED)
             await db.commit()
-        if rid and not stale and workflow_name not in HUMAN_ACTION_WORKFLOWS:
+        if not stale:
             with contextlib.suppress(InvalidTransition, LookupError):
                 await set_run_status(rt.sessionmaker, run_id=rid, target=RunStatus.FAILED, error=payload)
         await finish_attempt(rt.sessionmaker, workflow_id=workflow_id, status=AttemptStatus.FAILED, error=payload)
 
-    prefix = (
-        "recheck"
-        if workflow_name == "recheck_article"
-        else "publish"
-        if workflow_name == "publish_article"
-        else "discover"
-        if workflow_name == "discover_topics"
-        else "produce"
-        if workflow_name == "produce_article"
-        else workflow_name
-    )
+    if timed_out:
+        await failed()  # called directly: a cancelled workflow cannot start another step
+        return
+    prefix = "discover" if workflow_name == WORKFLOW_DISCOVER_TOPICS else "produce"
     await DBOS.run_step_async(step_options(f"{prefix}.mark_failed"), failed)

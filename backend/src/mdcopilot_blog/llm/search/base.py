@@ -11,7 +11,7 @@ class SearchQuery(BaseModel):
     allowed_domains: list[str] = Field(default_factory=list)
     max_results: int = 10
     recency_days: int | None = None
-    mode: Literal["broad", "deep", "verification"] = "broad"
+    mode: Literal["deep", "verification"]
     route: list[str] | None = None
 
 

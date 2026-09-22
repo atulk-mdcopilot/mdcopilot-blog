@@ -1,27 +1,20 @@
-"""FastAPI dependencies: app state accessors, the authenticated principal, RBAC and CSRF."""
+"""FastAPI dependencies: app state accessors and the internal service guard."""
 
-import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
+import hmac
+import re
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from typing import Annotated, Any, cast
 
 from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from mdcopilot_blog.auth.csrf import SAFE_METHODS, csrf_token_for, origin_allowed, tokens_match
-from mdcopilot_blog.auth.sessions import resolve_session
-from mdcopilot_blog.domain.enums import Permission, Role
-from mdcopilot_blog.domain.rbac import permissions_for
 from mdcopilot_blog.errors import ProblemError
 from mdcopilot_blog.settings import Settings
 from mdcopilot_blog.workflows.client import WorkflowClient
 
-LOGIN_PATH = "/api/auth/login"
-
-
-def utcnow() -> datetime:
-    return datetime.now(UTC)
+# mdcopilot-backend users.id of the acting admin; stored as blog_runs.created_by.
+_ON_BEHALF_OF = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
 
 
 def _state(request: Request, name: str) -> Any:
@@ -55,67 +48,21 @@ WorkflowClientDep = Annotated[WorkflowClient, Depends(get_workflow_client)]
 
 @dataclass(frozen=True)
 class Principal:
-    user_id: uuid.UUID
-    email: str
-    display_name: str
-    role: Role
-    permissions: frozenset[Permission]
-    session_token: str
+    user_id: str
 
 
-async def current_principal(request: Request, db: SessionDep, settings: SettingsDep) -> Principal:
-    token = request.cookies.get(settings.session_cookie_name)
-    if not token:
+def require_service(request: Request, settings: SettingsDep) -> Principal:
+    """Guard for every /api route: the shared internal token, then the acting user's id."""
+    expected = settings.blog_internal_token.get_secret_value() if settings.blog_internal_token else ""
+    if not expected:
+        raise ProblemError(503, "Internal service auth is not configured")
+    supplied = request.headers.get("x-internal-token", "")
+    if not hmac.compare_digest(supplied.encode(), expected.encode()):
         raise ProblemError(401, "Not authenticated")
-    passive = request.method in SAFE_METHODS and request.headers.get("x-session-activity") == "passive"
-    resolved = await resolve_session(db, token, now=utcnow(), touch=not passive)
-    if resolved is None:
-        raise ProblemError(401, "Not authenticated")
-    await db.commit()  # persists the throttled last_seen_at touch
-    user = resolved.user
-    role = Role(user.role)
-    return Principal(
-        user_id=user.id,
-        email=user.email,
-        display_name=user.display_name,
-        role=role,
-        permissions=permissions_for(role),
-        session_token=token,
-    )
+    user_id = request.headers.get("x-on-behalf-of", "")
+    if _ON_BEHALF_OF.fullmatch(user_id) is None:
+        raise ProblemError(400, "Invalid X-On-Behalf-Of header")
+    return Principal(user_id=user_id)
 
 
-PrincipalDep = Annotated[Principal, Depends(current_principal)]
-
-
-def require_permission(permission: Permission) -> Callable[..., Awaitable[Principal]]:
-    async def _require(principal: PrincipalDep) -> Principal:
-        if permission not in principal.permissions:
-            raise ProblemError(403, "Forbidden", f"missing permission {permission.value}")
-        return principal
-
-    return _require
-
-
-async def enforce_csrf(request: Request, settings: SettingsDep) -> None:
-    """App-wide guard for unsafe methods: Fetch Metadata, then Origin, then the session-bound token."""
-    if request.method in SAFE_METHODS:
-        return
-    fetch_site = request.headers.get("sec-fetch-site")
-    if fetch_site is not None and fetch_site != "same-origin":
-        raise ProblemError(403, "Cross-site request blocked")
-    if not origin_allowed(
-        request.headers.get("origin"),
-        host=request.headers.get("host"),
-        forwarded_proto=request.headers.get("x-forwarded-proto"),
-        scheme=request.url.scheme,
-        public_app_url=settings.public_app_url,
-    ):
-        raise ProblemError(403, "Origin not allowed")
-    if request.url.path == LOGIN_PATH:
-        return
-    session_token = request.cookies.get(settings.session_cookie_name)
-    if not session_token:
-        return  # no session: the route's auth dependency answers 401
-    expected = csrf_token_for(session_token, settings.session_secret.get_secret_value())
-    if not tokens_match(expected, request.headers.get("x-csrf-token", "")):
-        raise ProblemError(403, "CSRF token missing or invalid")
+PrincipalDep = Annotated[Principal, Depends(require_service)]

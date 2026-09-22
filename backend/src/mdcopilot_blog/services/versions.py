@@ -36,18 +36,6 @@ async def find_step[M: (ArticleVersion, ResearchPacketRecord, VersionSeo)](
     )
 
 
-async def latest_packet(db: AsyncSession, article_id: uuid.UUID) -> ResearchPacketRecord | None:
-    return cast(
-        ResearchPacketRecord | None,
-        await db.scalar(
-            select(ResearchPacketRecord)
-            .where(ResearchPacketRecord.article_id == article_id)
-            .order_by(ResearchPacketRecord.version.desc())
-            .limit(1)
-        ),
-    )
-
-
 def version_content(row: ArticleVersion) -> VersionContent:
     return build_version_content(
         title_options=TitleOptions.model_validate(row.title_options),
@@ -68,7 +56,6 @@ async def save_version(
     change_kind: str,
     change_scope: dict[str, Any],
     resolutions: Sequence[FindingResolution] = (),
-    created_by: uuid.UUID | None = None,
     call: CallContext | None = None,
 ) -> ArticleVersion:
     if call:
@@ -99,8 +86,6 @@ async def save_version(
         citation_markers=list(content.citation_markers),
         resolutions=[r.model_dump(mode="json") for r in resolutions],
         research_packet_id=packet.id if packet else None,
-        created_by=created_by,
-        created_by_kind="human" if created_by else "agent",
         dbos_workflow_id=call.dbos_workflow_id if call else None,
         dbos_step_id=call.dbos_step_id if call else None,
     )
@@ -116,10 +101,7 @@ async def save_version(
             )
         )
     article.current_version_id = row.id
-    if count == 0:
-        article.selected_title_key = "operational"
-    if article.selected_title_key in {"provocative", "operational", "visionary"}:
-        article.title = getattr(content.title_options, article.selected_title_key)
+    article.title = content.title_options.operational
     await db.flush()
     return row
 

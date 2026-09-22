@@ -21,20 +21,10 @@ from mdcopilot_blog.domain.tiers import Classification, DomainRule, classify_sou
 from mdcopilot_blog.research.environment import ResearchEnvironment
 from mdcopilot_blog.research.extract import extract_html, extract_pdf, looks_like_html, looks_like_pdf
 from mdcopilot_blog.research.retriever import fetch
-from mdcopilot_blog.research.signals import FeedSpec, Signal, in_window
+from mdcopilot_blog.research.signals import Signal, in_window
 
 MAX_LEDGER_CANDIDATES = 40
 REFETCH_AFTER = timedelta(hours=24)
-
-DISCOVERY_PRIORITY: dict[DiscoveredVia, int] = {
-    DiscoveredVia.PUBMED: 0,
-    DiscoveredVia.FEED: 1,
-    DiscoveredVia.FEDERAL_REGISTER: 2,
-    DiscoveredVia.FDA_CSV: 3,
-    DiscoveredVia.SEARCH: 4,
-    DiscoveredVia.DEEP_SEARCH: 4,
-    DiscoveredVia.VERIFICATION: 4,
-}
 
 
 @dataclass
@@ -107,9 +97,7 @@ def merge_signals(signals: Sequence[Signal]) -> list[Signal]:
         groups[canonical].append((index, signal))
     merged: list[Signal] = []
     for canonical in order:
-        members = sorted(
-            groups[canonical], key=lambda pair: (DISCOVERY_PRIORITY.get(pair[1].discovered_via, 99), pair[0])
-        )
+        members = groups[canonical]  # arrival order; every signal of a research run has the same origin
         representative = members[0][1]
         title = representative.title
         if title == representative.url:
@@ -138,7 +126,6 @@ def merge_signals(signals: Sequence[Signal]) -> list[Signal]:
                 published_at=published_at,
                 date_source=date_source,
                 discovered_via=representative.discovered_via,
-                feed_id=representative.feed_id,
                 external_ids=external_ids,
                 answer_excerpt=answer_excerpt,
             )
@@ -150,7 +137,6 @@ def select_candidates(
     signals: Sequence[Signal],
     *,
     rules: Mapping[str, DomainRule],
-    feeds: Mapping[uuid.UUID, FeedSpec],
     keywords: frozenset[str],
     now: datetime,
     window_days: int,
@@ -158,8 +144,7 @@ def select_candidates(
 ) -> list[Candidate]:
     candidates: list[Candidate] = []
     for signal in merge_signals(signals):
-        feed = feeds.get(signal.feed_id) if signal.feed_id is not None else None
-        classification = classify_source(signal.url, rules=rules, feed=feed.hint() if feed else None)
+        classification = classify_source(signal.url, rules=rules)
         pmid = dict(signal.external_ids).get("pmid") or None
         if pmid is None:
             pmid = _pmid_from_url(signal.url)
@@ -188,15 +173,13 @@ def select_candidates(
 
 
 def _pmid_from_url(url: str) -> str | None:
-    from mdcopilot_blog.research.collectors.pubmed import pmid_from_url
+    from mdcopilot_blog.research.pubmed import pmid_from_url
 
     return pmid_from_url(url)
 
 
 def needs_retrieval(existing: LedgerSource | None, *, now: datetime) -> bool:
     if existing is None:
-        return True
-    if existing.snapshot_purged_at is not None:
         return True
     if existing.access_mode in (AccessMode.FULL_TEXT.value, AccessMode.ABSTRACT_ONLY.value):
         return False
@@ -241,7 +224,7 @@ async def _retrieve_one(
     external_ids = dict(signal.external_ids)
 
     if candidate.pmid is not None:
-        from mdcopilot_blog.research.collectors.pubmed import PubMedClient, PubMedError
+        from mdcopilot_blog.research.pubmed import PubMedClient, PubMedError
 
         client = PubMedClient(env)
         pmids = [candidate.pmid]
@@ -320,7 +303,6 @@ async def _retrieve_one(
     publisher = resolve_publisher(
         rule_publisher=classification.rule_publisher,
         journal=publisher_parts.get("journal"),
-        feed_publisher=classification.feed_publisher,
         sitename=publisher_parts.get("sitename"),
         domain=classification.domain,
     )
@@ -452,7 +434,6 @@ async def upsert_sources(
             continue
         if item.text_snapshot is not None:
             row.text_snapshot = item.text_snapshot
-            row.snapshot_purged_at = None
             row.content_hash = item.content_hash
             row.word_count = item.word_count
             row.access_mode = item.access_mode.value

@@ -7,39 +7,31 @@ find the row it is handed.
 
 import logging
 import uuid
-from datetime import UTC, date, datetime
+from collections.abc import Sequence
+from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mdcopilot_blog.api.deps import Principal
-from mdcopilot_blog.api.schemas import ManualRunRequest
-from mdcopilot_blog.db.models import AgentRun, BlogRun, RunAttempt
-from mdcopilot_blog.domain.enums import AttemptStatus, RunKind, RunStatus
-from mdcopilot_blog.domain.state_machine import Entity, require_transition
+from mdcopilot_blog.api.schemas import DraftOut, ManualRunRequest
+from mdcopilot_blog.db.models import AgentRun, Article, BlogRun, RunAttempt
+from mdcopilot_blog.domain.enums import AttemptStatus, RunStatus
+from mdcopilot_blog.domain.state_machine import Entity, InvalidTransition, require_transition
 from mdcopilot_blog.errors import ProblemError
 from mdcopilot_blog.ids import new_trace_id
-from mdcopilot_blog.services.audit import audit
 from mdcopilot_blog.settings import Settings
 from mdcopilot_blog.workflows.client import WorkflowClient
 from mdcopilot_blog.workflows.names import QUEUE_PIPELINE, WORKFLOW_DISCOVER_TOPICS
 
 logger = logging.getLogger(__name__)
 
-RUN_ENTITY = "blog_run"
 ACTIVE_ATTEMPT_STATUSES = frozenset({AttemptStatus.ENQUEUED.value, AttemptStatus.RUNNING.value})
 ERROR_MESSAGE_LIMIT = 500
 
 
 def manual_workflow_id(run_id: uuid.UUID) -> str:
     return f"manual-{run_id}"
-
-
-def initial_workflow_id(run: BlogRun) -> str:
-    """Workflow id of a run's first execution: ``manual-<run id>`` or ``daily-<run date>``."""
-    if run.kind == RunKind.DAILY.value:
-        return f"daily-{run.run_date.isoformat()}"
-    return manual_workflow_id(run.id)
 
 
 async def create_manual_run(
@@ -49,14 +41,11 @@ async def create_manual_run(
     principal: Principal,
     request: ManualRunRequest,
     settings: Settings,
-    today: date,
 ) -> BlogRun:
     if not settings.agent_enabled:
         raise ProblemError(409, "Agent disabled", "BLOG_AGENT_ENABLED is false, so new runs are rejected.")
 
     run = BlogRun(
-        kind=RunKind.MANUAL.value,
-        run_date=request.run_date or today,
         status=RunStatus.QUEUED.value,
         params=request.model_dump(mode="json", exclude_none=True),
         trace_id=new_trace_id(),
@@ -65,14 +54,6 @@ async def create_manual_run(
     db.add(run)
     await db.flush()
     workflow_id = manual_workflow_id(run.id)
-    await audit(
-        db,
-        actor_user_id=principal.user_id,
-        action="run.create",
-        entity_type=RUN_ENTITY,
-        entity_id=str(run.id),
-        details={"kind": run.kind, "run_date": run.run_date.isoformat(), "workflow_id": workflow_id},
-    )
     await db.commit()
 
     try:
@@ -88,7 +69,7 @@ async def create_manual_run(
         require_transition(Entity.RUN, run.status, RunStatus.FAILED.value)
         run.status = RunStatus.FAILED.value
         run.finished_at = datetime.now(UTC)
-        run.error = {"stage": "enqueue", "message": f"{type(exc).__name__}: {exc}"[:ERROR_MESSAGE_LIMIT]}
+        run.error = {"class": type(exc).__name__, "message": str(exc)[:ERROR_MESSAGE_LIMIT]}
         await db.commit()
         raise ProblemError(503, "Workflow service unavailable", f"run {run.id} was marked FAILED") from exc
 
@@ -96,46 +77,36 @@ async def create_manual_run(
     return run
 
 
-async def list_runs(
-    db: AsyncSession, *, status: RunStatus | None, limit: int, offset: int
-) -> tuple[list[BlogRun], int]:
+async def list_runs(db: AsyncSession, *, limit: int, offset: int) -> tuple[list[BlogRun], int]:
     query = select(BlogRun)
-    count_query = select(func.count()).select_from(BlogRun)
-    if status is not None:
-        query = query.where(BlogRun.status == status.value)
-        count_query = count_query.where(BlogRun.status == status.value)
-    total = await db.scalar(count_query)
+    total = await db.scalar(select(func.count()).select_from(BlogRun))
     # id is a UUIDv7, so it breaks created_at ties in insertion order
     rows = await db.scalars(query.order_by(BlogRun.created_at.desc(), BlogRun.id.desc()).limit(limit).offset(offset))
     return list(rows.all()), int(total or 0)
 
 
-async def get_run_detail(
-    db: AsyncSession, run_id: uuid.UUID
-) -> tuple[BlogRun, list[RunAttempt], list[AgentRun]] | None:
+async def get_run_detail(db: AsyncSession, run_id: uuid.UUID) -> tuple[BlogRun, list[AgentRun]] | None:
     run = await db.get(BlogRun, run_id)
     if run is None:
         return None
-    attempts = await db.scalars(select(RunAttempt).where(RunAttempt.run_id == run_id).order_by(RunAttempt.attempt_no))
     steps = await db.scalars(
         select(AgentRun).where(AgentRun.run_id == run_id).order_by(AgentRun.created_at, AgentRun.dbos_step_id)
     )
-    return run, list(attempts.all()), list(steps.all())
+    return run, list(steps.all())
 
 
-async def cancel_run(db: AsyncSession, client: WorkflowClient, *, run: BlogRun, principal: Principal) -> BlogRun:
+async def cancel_run(db: AsyncSession, client: WorkflowClient, *, run: BlogRun) -> BlogRun:
+    """Raises ``InvalidTransition`` for a run that is already terminal (CANCELLED included)."""
     if run.status == RunStatus.CANCELLED.value:
-        # Same-state transition: a no-op under the state machine rules. Nothing is left to cancel.
-        return run
+        raise InvalidTransition(Entity.RUN, run.status, RunStatus.CANCELLED.value)
     require_transition(Entity.RUN, run.status, RunStatus.CANCELLED.value)
-    previous_status = run.status
 
     attempts = list(
         (await db.scalars(select(RunAttempt).where(RunAttempt.run_id == run.id).order_by(RunAttempt.attempt_no))).all()
     )
     active = [attempt for attempt in attempts if attempt.status in ACTIVE_ATTEMPT_STATUSES]
     workflow_ids = [attempt.dbos_workflow_id for attempt in active]
-    first_workflow_id = initial_workflow_id(run)
+    first_workflow_id = manual_workflow_id(run.id)
     if run.status == RunStatus.QUEUED.value and all(a.dbos_workflow_id != first_workflow_id for a in attempts):
         # The worker writes the attempt row only when the workflow starts, so a run that is still
         # queued has no row for its first workflow yet. Cancel that workflow by its known id.
@@ -154,13 +125,21 @@ async def cancel_run(db: AsyncSession, client: WorkflowClient, *, run: BlogRun, 
         attempt.finished_at = now
     run.status = RunStatus.CANCELLED.value
     run.finished_at = now
-    await audit(
-        db,
-        actor_user_id=principal.user_id,
-        action="run.cancel",
-        entity_type=RUN_ENTITY,
-        entity_id=str(run.id),
-        details={"from_status": previous_status, "workflow_ids": workflow_ids},
-    )
     await db.commit()
     return run
+
+
+async def load_drafts(db: AsyncSession, run_ids: Sequence[uuid.UUID]) -> dict[uuid.UUID, DraftOut]:
+    """Run id -> the draft saved to MDCopilot Blogs; runs whose draft has not been saved are absent."""
+    articles = await db.scalars(
+        select(Article).where(Article.run_id.in_(run_ids), Article.backend_blog_id.is_not(None))
+    )
+    return {
+        article.run_id: DraftOut(
+            blog_id=article.backend_blog_id,
+            title=article.title or "",
+            gates_passed=(article.draft_report or {}).get("gatesPassed", False),
+            gate_problems=(article.draft_report or {}).get("gateProblems", []),
+        )
+        for article in articles
+    }

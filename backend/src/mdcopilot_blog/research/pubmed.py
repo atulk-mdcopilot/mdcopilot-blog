@@ -1,4 +1,4 @@
-"""PubMed E-utilities client: esearch, esummary, efetch, rate spacing."""
+"""PubMed E-utilities client: esummary, efetch, rate spacing."""
 
 import asyncio
 import re
@@ -13,22 +13,13 @@ from urllib.parse import urlsplit
 import httpx
 
 from mdcopilot_blog.domain import urls
-from mdcopilot_blog.domain.enums import DateSource, DiscoveredVia, FetchStatus
+from mdcopilot_blog.domain.enums import FetchStatus
 from mdcopilot_blog.research.environment import ResearchEnvironment
 from mdcopilot_blog.research.retriever import fetch
-from mdcopilot_blog.research.signals import (
-    MAX_ITEMS_PER_FEED,
-    FeedOutcome,
-    FeedSpec,
-    Signal,
-    in_window,
-    newest_first,
-    plausible,
-)
+from mdcopilot_blog.research.signals import plausible
 
 EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 EFETCH_BATCH = 200
-DOI_BATCH = 20
 PUBMED_TOOL = "mdcopilot-blog"
 
 
@@ -59,25 +50,6 @@ class PubMedClient:
         if self._env.settings.ncbi_api_key is not None:
             pairs.append(("api_key", self._env.settings.ncbi_api_key.get_secret_value()))
         return pairs
-
-    def esearch_url(self, term: str, *, retmax: int, sort: str | None, reldate: int | None) -> str:
-        pairs = [
-            ("db", "pubmed"),
-            ("term", term),
-            ("retmode", "json"),
-            ("retmax", str(retmax)),
-        ]
-        if sort:
-            pairs.append(("sort", sort))
-        pairs.append(("datetype", "pdat"))
-        if reldate is not None:
-            pairs.append(("reldate", str(reldate)))
-        pairs.append(("tool", PUBMED_TOOL))
-        if self._env.settings.ncbi_contact_email:
-            pairs.append(("email", self._env.settings.ncbi_contact_email))
-        if self._env.settings.ncbi_api_key is not None:
-            pairs.append(("api_key", self._env.settings.ncbi_api_key.get_secret_value()))
-        return str(httpx.URL(f"{EUTILS_BASE}/esearch.fcgi", params=pairs))
 
     def esummary_url(self, pmids: Sequence[str]) -> str:
         joined = ",".join(sorted(pmids, key=lambda value: int(value)))
@@ -114,14 +86,6 @@ class PubMedClient:
         except json.JSONDecodeError as exc:
             raise PubMedError(f"{endpoint}: unexpected response") from exc
         return payload
-
-    async def esearch(self, term: str, *, retmax: int, sort: str | None, reldate: int | None) -> list[str]:
-        data = await self._get(self.esearch_url(term, retmax=retmax, sort=sort, reldate=reldate), "esearch")
-        try:
-            idlist = data["esearchresult"]["idlist"]
-        except (KeyError, TypeError) as exc:
-            raise PubMedError("esearch: unexpected response") from exc
-        return [str(pmid) for pmid in idlist]
 
     async def esummary(self, pmids: Sequence[str]) -> dict[str, PubMedSummary]:
         if not pmids:
@@ -191,96 +155,6 @@ class PubMedClient:
                 if abstract:
                     abstracts[pmid] = abstract
         return abstracts
-
-
-async def resolve_dois(
-    env: ResearchEnvironment, dois: Sequence[str], *, now: datetime | None = None
-) -> list[PubMedSummary]:
-    unique: dict[str, str] = {}
-    for doi in dois:
-        if doi and doi.lower() not in unique:
-            unique[doi.lower()] = doi
-    client = PubMedClient(env)
-    matched: list[PubMedSummary] = []
-    spellings = list(unique.values())
-    for start in range(0, len(spellings), DOI_BATCH):
-        batch = spellings[start : start + DOI_BATCH]
-        term = " OR ".join(f"{doi}[doi]" for doi in batch)
-        ids = await client.esearch(term, retmax=DOI_BATCH, sort=None, reldate=None)
-        if not ids:
-            continue
-        summaries = await client.esummary(ids)
-        by_doi = {summary.doi.lower(): summary for summary in summaries.values() if summary.doi}
-        for doi in batch:
-            summary = by_doi.get(doi.lower())
-            if summary is not None:
-                matched.append(summary)
-    return matched
-
-
-async def collect_pubmed_search(
-    env: ResearchEnvironment, feed: FeedSpec, *, now: datetime, window_days: int
-) -> FeedOutcome:
-    quirks: dict[str, Any] = dict(feed.quirks or {})
-    params: Any = quirks.get("query_params") or {}
-    term = params.get("term")
-    if not isinstance(term, str) or not term:
-        return FeedOutcome(
-            feed=feed,
-            ok=False,
-            fetched=True,
-            signals=[],
-            error="pubmed feed has no term",
-            http_status=None,
-            not_modified=False,
-            new_state=dict(feed.state or {}),
-            items_in_window=0,
-        )
-    retmax = int(str(params.get("retmax", "20")))
-    sort: Any = params.get("sort")
-    reldate = window_days
-    client = PubMedClient(env)
-    try:
-        ids = await client.esearch(term, retmax=retmax, sort=str(sort) if sort else None, reldate=reldate)
-        summaries = await client.esummary(ids)
-    except PubMedError as exc:
-        return FeedOutcome(
-            feed=feed,
-            ok=False,
-            fetched=True,
-            signals=[],
-            error=str(exc),
-            http_status=None,
-            not_modified=False,
-            new_state=dict(feed.state or {}),
-            items_in_window=0,
-        )
-    signals: list[Signal] = []
-    for pmid, summary in summaries.items():
-        signals.append(
-            Signal(
-                url=f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
-                title=summary.title,
-                published_at=summary.published_at,
-                date_source=DateSource.API if summary.published_at else DateSource.NONE,
-                discovered_via=DiscoveredVia.PUBMED,
-                feed_id=feed.id,
-                external_ids={"pmid": pmid, **({"doi": summary.doi} if summary.doi else {})},
-            )
-        )
-    kept = [signal for signal in signals if in_window(signal.published_at, now=now, window_days=window_days)]
-    ordered = newest_first(kept, limit=MAX_ITEMS_PER_FEED)
-    return FeedOutcome(
-        feed=feed,
-        ok=True,
-        fetched=True,
-        signals=ordered,
-        error=None,
-        http_status=None,
-        not_modified=False,
-        new_state=dict(feed.state or {}),
-        items_in_window=len(kept),
-    )
 
 
 def pmid_from_url(url: str) -> str | None:

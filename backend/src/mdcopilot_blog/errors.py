@@ -10,11 +10,6 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from mdcopilot_blog.domain.errors import (
-    ArticleStructureError,
-    PublishingDisabled,
-    UnknownCitationMarker,
-)
 from mdcopilot_blog.domain.state_machine import InvalidTransition
 
 PROBLEM_JSON = "application/problem+json"
@@ -93,15 +88,3 @@ def install_problem_handlers(app: FastAPI) -> None:
     @app.exception_handler(InvalidTransition)
     async def _invalid_transition(request: Request, exc: InvalidTransition) -> JSONResponse:
         return problem_response(request, 409, "Invalid state transition", str(exc))
-
-    @app.exception_handler(ArticleStructureError)
-    async def _article_structure(request: Request, exc: ArticleStructureError) -> JSONResponse:
-        return problem_response(request, 422, "Article structure invalid", str(exc))
-
-    @app.exception_handler(UnknownCitationMarker)
-    async def _unknown_marker(request: Request, exc: UnknownCitationMarker) -> JSONResponse:
-        return problem_response(request, 422, "Unknown citation marker", str(exc))
-
-    @app.exception_handler(PublishingDisabled)
-    async def _publishing_disabled(request: Request, exc: PublishingDisabled) -> JSONResponse:
-        return problem_response(request, 409, "Publishing disabled", str(exc))

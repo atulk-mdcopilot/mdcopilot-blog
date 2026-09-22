@@ -1,15 +1,15 @@
-"""Status transition tables for runs, articles and publications.
+"""Status transition tables for runs and articles.
 
 The API and the workflows both call ``require_transition`` before writing a status.
 Moving to the state an entity is already in is always allowed and changes nothing, so a retried
-or forked step can repeat its status write safely.
+step can repeat its status write safely.
 """
 
 from collections.abc import Iterable, Mapping
 from enum import StrEnum
 from types import MappingProxyType
 
-from mdcopilot_blog.domain.enums import ArticleStatus, PublicationStatus, RunStatus
+from mdcopilot_blog.domain.enums import ArticleStatus, RunStatus
 
 
 class Entity(StrEnum):
@@ -17,7 +17,6 @@ class Entity(StrEnum):
 
     RUN = "run"
     ARTICLE = "article"
-    PUBLICATION = "publication"
 
 
 class InvalidTransition(ValueError):
@@ -42,113 +41,50 @@ _RUN = _table(
     {
         RunStatus.QUEUED: {RunStatus.RESEARCHING, RunStatus.PRODUCING, RunStatus.FAILED, RunStatus.CANCELLED},
         RunStatus.RESEARCHING: {RunStatus.TOPICS_READY, RunStatus.FAILED, RunStatus.CANCELLED},
-        RunStatus.TOPICS_READY: {
-            RunStatus.WAITING_FOR_TOPIC,
-            RunStatus.PRODUCING,
-            RunStatus.FAILED,
-            RunStatus.CANCELLED,
-        },
-        RunStatus.WAITING_FOR_TOPIC: {
-            RunStatus.TOPICS_READY,
-            RunStatus.PRODUCING,
-            RunStatus.FAILED,
-            RunStatus.CANCELLED,
-        },
+        RunStatus.TOPICS_READY: {RunStatus.PRODUCING, RunStatus.FAILED, RunStatus.CANCELLED},
         RunStatus.PRODUCING: {RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELLED},
-        # Finished runs can only be queued again (restart / retry creates a new attempt).
-        RunStatus.SUCCEEDED: {RunStatus.QUEUED},
-        RunStatus.FAILED: {RunStatus.QUEUED},
-        RunStatus.CANCELLED: {RunStatus.QUEUED},
+        # Terminal.
+        RunStatus.SUCCEEDED: set(),
+        RunStatus.FAILED: set(),
+        RunStatus.CANCELLED: set(),
     }
 )
 
 _ARTICLE = _table(
     {
-        ArticleStatus.DRAFTING: {ArticleStatus.FACT_CHECKING, ArticleStatus.FAILED, ArticleStatus.SUPERSEDED},
+        ArticleStatus.DRAFTING: {ArticleStatus.FACT_CHECKING, ArticleStatus.DRAFT_SAVED, ArticleStatus.FAILED},
         ArticleStatus.FACT_CHECKING: {
             ArticleStatus.CLINICAL_REVIEW,
             ArticleStatus.SEO,
-            ArticleStatus.READY_FOR_REVIEW,
-            ArticleStatus.QUALITY_GATE_FAILED,
             ArticleStatus.DRAFTING,
+            ArticleStatus.DRAFT_SAVED,
             ArticleStatus.FAILED,
-            ArticleStatus.SUPERSEDED,
         },
         ArticleStatus.CLINICAL_REVIEW: {
             ArticleStatus.EDITORIAL_REVIEW,
+            ArticleStatus.DRAFT_SAVED,
             ArticleStatus.FAILED,
-            ArticleStatus.SUPERSEDED,
         },
         ArticleStatus.EDITORIAL_REVIEW: {
             ArticleStatus.DRAFTING,
             ArticleStatus.FACT_CHECKING,
             ArticleStatus.SEO,
+            ArticleStatus.DRAFT_SAVED,
             ArticleStatus.FAILED,
-            ArticleStatus.SUPERSEDED,
         },
         ArticleStatus.SEO: {
-            ArticleStatus.READY_FOR_REVIEW,
-            ArticleStatus.QUALITY_GATE_FAILED,
             ArticleStatus.DRAFTING,
+            ArticleStatus.DRAFT_SAVED,
             ArticleStatus.FAILED,
-            ArticleStatus.SUPERSEDED,
         },
-        ArticleStatus.READY_FOR_REVIEW: {
-            ArticleStatus.APPROVED,
-            ArticleStatus.REJECTED,
-            ArticleStatus.DRAFTING,
-            ArticleStatus.FACT_CHECKING,
-            ArticleStatus.QUALITY_GATE_FAILED,
-            ArticleStatus.SUPERSEDED,
-        },
-        ArticleStatus.QUALITY_GATE_FAILED: {
-            ArticleStatus.READY_FOR_REVIEW,
-            ArticleStatus.APPROVED,
-            ArticleStatus.REJECTED,
-            ArticleStatus.DRAFTING,
-            ArticleStatus.FACT_CHECKING,
-            ArticleStatus.SUPERSEDED,
-        },
-        # Only a human approval leads to scheduling, export or publishing.
-        ArticleStatus.APPROVED: {
-            ArticleStatus.EXPORTED,
-            ArticleStatus.PUBLISHING,
-            ArticleStatus.SCHEDULED,
-            ArticleStatus.REJECTED,
-            ArticleStatus.DRAFTING,
-            ArticleStatus.READY_FOR_REVIEW,
-        },
-        ArticleStatus.SCHEDULED: {
-            ArticleStatus.EXPORTED,
-            ArticleStatus.PUBLISHING,
-            ArticleStatus.APPROVED,
-            ArticleStatus.REJECTED,
-        },
-        ArticleStatus.EXPORTED: {ArticleStatus.PUBLISHED, ArticleStatus.REJECTED},
-        ArticleStatus.PUBLISHING: {ArticleStatus.PUBLISHED, ArticleStatus.PUBLISH_FAILED},
-        ArticleStatus.PUBLISH_FAILED: {ArticleStatus.PUBLISHING, ArticleStatus.APPROVED},
-        ArticleStatus.FAILED: {ArticleStatus.DRAFTING, ArticleStatus.SUPERSEDED},
-        # Terminal.
-        ArticleStatus.PUBLISHED: set(),
-        ArticleStatus.REJECTED: set(),
-        ArticleStatus.SUPERSEDED: set(),
-    }
-)
-
-_PUBLICATION = _table(
-    {
-        PublicationStatus.PENDING: {PublicationStatus.EXPORTED, PublicationStatus.IN_PROGRESS},
-        PublicationStatus.EXPORTED: {PublicationStatus.CONFIRMED},
-        PublicationStatus.IN_PROGRESS: {PublicationStatus.PUBLISHED, PublicationStatus.FAILED},
-        PublicationStatus.FAILED: {PublicationStatus.IN_PROGRESS},
-        # Terminal.
-        PublicationStatus.CONFIRMED: set(),
-        PublicationStatus.PUBLISHED: set(),
+        # Terminal: the draft now lives in MDCopilot Blogs.
+        ArticleStatus.DRAFT_SAVED: set(),
+        ArticleStatus.FAILED: {ArticleStatus.DRAFTING},
     }
 )
 
 TRANSITIONS: Mapping[Entity, Mapping[str, frozenset[str]]] = MappingProxyType(
-    {Entity.RUN: _RUN, Entity.ARTICLE: _ARTICLE, Entity.PUBLICATION: _PUBLICATION}
+    {Entity.RUN: _RUN, Entity.ARTICLE: _ARTICLE}
 )
 
 

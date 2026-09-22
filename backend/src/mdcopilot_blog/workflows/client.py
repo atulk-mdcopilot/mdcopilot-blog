@@ -1,8 +1,7 @@
-"""The api's only door to DBOS: enqueue and manage workflows by name through DBOSClient (never DBOS.launch())."""
+"""The api's only door to DBOS: enqueue and cancel workflows by name through DBOSClient (never DBOS.launch())."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from dbos import DBOSClient, EnqueueOptions, WorkflowHandleAsync
@@ -12,22 +11,6 @@ if TYPE_CHECKING:
 
 DBOS_SYSTEM_SCHEMA = "blog_dbos"  # blog_ namespace in the shared mdcopilot-backend database
 DBOS_APPLICATION_NAME = "mdcopilot-blog"
-
-
-@dataclass(frozen=True)
-class StepView:
-    function_id: int
-    function_name: str
-    started_at_epoch_ms: int | None
-    completed_at_epoch_ms: int | None
-    error: str | None
-
-
-@dataclass(frozen=True)
-class WorkflowDescription:
-    status: str
-    app_version: str | None
-    name: str
 
 
 class WorkflowClient:
@@ -70,40 +53,6 @@ class WorkflowClient:
 
     async def cancel(self, workflow_id: str) -> None:
         await self._client.cancel_workflow_async(workflow_id)
-
-    async def list_steps(self, workflow_id: str) -> list[StepView]:
-        # load_output=True is required: with False, DBOS also drops the step error.
-        steps = await self._client.list_workflow_steps_async(workflow_id)
-        return [
-            StepView(
-                function_id=step["function_id"],
-                function_name=step["function_name"],
-                started_at_epoch_ms=step["started_at_epoch_ms"],
-                completed_at_epoch_ms=step["completed_at_epoch_ms"],
-                error=None if step["error"] is None else f"{type(step['error']).__name__}: {step['error']}",
-            )
-            for step in steps
-        ]
-
-    async def status(self, workflow_id: str) -> str | None:
-        rows = await self._client.list_workflows_async(workflow_ids=[workflow_id], load_input=False, load_output=False)
-        return rows[0].status if rows else None
-
-    async def describe(self, workflow_id: str) -> WorkflowDescription | None:
-        rows = await self._client.list_workflows_async(workflow_ids=[workflow_id], load_input=False, load_output=False)
-        return WorkflowDescription(rows[0].status, rows[0].app_version, rows[0].name) if rows else None
-
-    async def fork_from_function_id(
-        self, workflow_id: str, start_step: int, *, queue_name: str, timeout_seconds: float | None
-    ) -> str:
-        handle = await self._client.fork_workflow_async(
-            workflow_id,
-            start_step,
-            application_version=self._app_version,
-            queue_name=queue_name,
-            timeout_seconds=timeout_seconds,
-        )
-        return handle.get_workflow_id()
 
     def close(self) -> None:
         self._client.destroy()

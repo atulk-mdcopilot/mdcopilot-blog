@@ -1,19 +1,14 @@
 """HTTP request/response models. JSON is camelCase; Python attributes stay snake_case."""
 
 import uuid
-from datetime import date, datetime
+from datetime import datetime
 from decimal import Decimal
-from typing import Any
+from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 from pydantic.alias_generators import to_camel
 
-from mdcopilot_blog.domain.contracts import PillarKey
-from mdcopilot_blog.domain.enums import AttemptStatus, Permission, Role, RunKind, RunStatus, StepStatus
-
-MAX_EMAIL_LENGTH = 320
-MAX_PASSWORD_LENGTH = 1024
-MIN_KEY_LENGTH_FOR_PREVIEW = 12  # shorter keys would reveal too large a share
+from mdcopilot_blog.domain.enums import RunStatus, StepStatus
 
 
 class ApiModel(BaseModel):
@@ -27,119 +22,49 @@ class ApiModel(BaseModel):
     )
 
 
-# --- auth ---
-
-
-class LoginRequest(ApiModel):
-    email: str = Field(min_length=3, max_length=MAX_EMAIL_LENGTH)
-    password: str = Field(min_length=1, max_length=MAX_PASSWORD_LENGTH)
-
-
-class SessionUser(ApiModel):
-    id: uuid.UUID
-    email: str
-    display_name: str
-    role: Role
-    permissions: list[Permission]
-
-
-class SessionResponse(ApiModel):
-    user: SessionUser
-    csrf_token: str
-
-
-# --- settings ---
-
-
-class ProviderKeyView(ApiModel):
-    configured: bool
-    preview: str | None
-
-
-class SettingsView(ApiModel):
-    app_version: str
-    agent_enabled: bool
-    scheduler_enabled: bool
-    publishing_enabled: bool
-    human_approval_required: bool
-    schedule: dict[str, str]
-    routes: dict[str, list[str]]
-    limits: dict[str, str | int | float]
-    publisher: str
-    providers: dict[str, ProviderKeyView]
-
-
-def mask_secret(value: SecretStr | None) -> ProviderKeyView:
-    """Never return a key: 3 leading + 4 trailing characters for long keys, 'set' for short ones."""
-    raw = value.get_secret_value() if value is not None else ""
-    if not raw:
-        return ProviderKeyView(configured=False, preview=None)
-    if len(raw) >= MIN_KEY_LENGTH_FOR_PREVIEW:
-        return ProviderKeyView(configured=True, preview=f"{raw[:3]}…{raw[-4:]}")
-    return ProviderKeyView(configured=True, preview="set")
-
-
-# --- runs ---
-
-
 class ManualRunRequest(ApiModel):
-    run_date: date | None = None
-    pillar: PillarKey | None = None
-    topic: str | None = Field(None, max_length=300)
+    topic: Annotated[str, StringConstraints(strip_whitespace=True, min_length=3, max_length=300)]
     audience: str | None = Field(None, max_length=300)
     tone: str | None = Field(None, max_length=300)
     word_count: int | None = Field(None, ge=300, le=3000)
 
 
+class DraftOut(ApiModel):
+    """The draft saved to MDCopilot Blogs."""
+
+    blog_id: str
+    title: str
+    gates_passed: bool
+    gate_problems: list[str]
+
+
 class RunOut(ApiModel):
     id: uuid.UUID
-    kind: RunKind
-    run_date: date
+    topic: str
     status: RunStatus
     stage: str | None
-    trace_id: str
+    error: dict[str, Any] | None  # blog_runs.error: {"class", "message"}
     cost_usd: Decimal
+    created_by: str | None
     created_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
-
-
-class AttemptOut(ApiModel):
-    id: uuid.UUID
-    dbos_workflow_id: str
-    workflow_name: str
-    attempt_no: int
-    status: AttemptStatus
-    started_at: datetime | None
-    finished_at: datetime | None
-    forked_from_workflow_id: str | None
-    error: dict[str, Any] | None = None
+    draft: DraftOut | None = None
 
 
 class StepOut(ApiModel):
-    id: uuid.UUID
     step_name: str
-    dbos_step_id: int
     status: StepStatus
     tries: int
     agent_name: str | None
     model: str | None
-    prompt_name: str | None
-    prompt_version: int | None
-    input_tokens: int
-    output_tokens: int
     cost_usd: Decimal
     duration_ms: int | None
     error: dict[str, Any] | None
 
 
 class RunDetail(RunOut):
-    params: dict[str, Any]
-    attempts: list[AttemptOut]
     steps: list[StepOut]
-    error: dict[str, Any] | None = None
-    article_ids: list[uuid.UUID] = Field(default_factory=list)
-    research_run_ids: list[uuid.UUID] = Field(default_factory=list)
 
 
 class Page[T](ApiModel):

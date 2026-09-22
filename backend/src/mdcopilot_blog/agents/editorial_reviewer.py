@@ -2,10 +2,10 @@
 
 from collections.abc import Sequence
 
-from mdcopilot_blog.agents.common import UNTRUSTED_NOTICE, render_brand_voice
+from mdcopilot_blog.agents.common import UNTRUSTED_NOTICE, render_avoid_bundle, render_brand_voice
 from mdcopilot_blog.agents.fact_checker import ArticleText, article_prompt
 from mdcopilot_blog.domain.config import BrandProfileValues, WordCountRange
-from mdcopilot_blog.domain.contracts import AvoidBundle, EditorialReview, TitleOptions
+from mdcopilot_blog.domain.contracts import EditorialReview, TitleOptions
 from mdcopilot_blog.domain.enums import AgentName
 from mdcopilot_blog.domain.errors import OutputRejected
 from mdcopilot_blog.llm.gateway import AgentResult, AgentSpec, CallContext, LLMGateway
@@ -25,14 +25,12 @@ async def run_editorial_reviewer(
     *,
     ctx: CallContext,
     brand: BrandProfileValues,
-    avoid: AvoidBundle,
     word_count: WordCountRange,
     article: ArticleText,
     title_options: TitleOptions,
     cta: str,
     excerpt: str,
     route_override: Sequence[str] | None = None,
-    prompt_version: int | None = None,
 ) -> AgentResult[EditorialReview]:
     def validate(output: EditorialReview) -> None:
         changes = output.required_changes + output.optional_changes
@@ -44,7 +42,7 @@ async def run_editorial_reviewer(
         variables={
             "untrusted_notice": UNTRUSTED_NOTICE,
             "brand_voice": render_brand_voice(brand),
-            "avoid_bundle": avoid.model_dump_json(),
+            "avoid_bundle": render_avoid_bundle(brand),
             "word_count_min": word_count.min,
             "word_count_max": word_count.max,
         },
@@ -57,6 +55,5 @@ async def run_editorial_reviewer(
         + excerpt,
         ctx=ctx,
         route_override=route_override,
-        prompt_version=prompt_version,
         output_check=validate,
     )

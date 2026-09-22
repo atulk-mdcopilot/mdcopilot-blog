@@ -28,7 +28,6 @@ async def run_clinical_reviewer(
     article: ArticleText,
     title: str,
     route_override: Sequence[str] | None = None,
-    prompt_version: int | None = None,
 ) -> AgentResult[ClinicalReview]:
     def validate(output: ClinicalReview) -> None:
         for flag in output.flags:
@@ -41,6 +40,5 @@ async def run_clinical_reviewer(
         user_prompt=title + "\n" + article_prompt(article),
         ctx=ctx,
         route_override=route_override,
-        prompt_version=prompt_version,
         output_check=validate,
     )

@@ -1,4 +1,4 @@
-"""One row per LLM, search or embedding attempt, and the registered prompt versions."""
+"""One row per LLM or search attempt, and the registered prompt versions."""
 
 import uuid
 from decimal import Decimal

@@ -9,17 +9,16 @@ from pydantic import BaseModel
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from mdcopilot_blog.agents.clinical_reviewer import CLINICAL_SPEC, run_clinical_reviewer
+from mdcopilot_blog.agents.clinical_reviewer import run_clinical_reviewer
 from mdcopilot_blog.agents.common import number_sources, resolve_markers
-from mdcopilot_blog.agents.editorial_reviewer import EDITORIAL_SPEC, run_editorial_reviewer
-from mdcopilot_blog.agents.fact_checker import FACT_CHECK_SPEC, ArticleText, run_fact_checker
-from mdcopilot_blog.agents.seo_specialist import SEO_SPEC, LinkCandidate, run_seo_specialist
+from mdcopilot_blog.agents.editorial_reviewer import run_editorial_reviewer
+from mdcopilot_blog.agents.fact_checker import ArticleText, run_fact_checker
+from mdcopilot_blog.agents.seo_specialist import run_seo_specialist
 from mdcopilot_blog.db.models import (
     Article,
     ArticleSource,
     ArticleVersion,
     ClaimCheckRecord,
-    ExternalPost,
     LedgerSource,
     LlmCall,
     ResearchPacketRecord,
@@ -29,7 +28,6 @@ from mdcopilot_blog.db.models import (
 from mdcopilot_blog.domain.config import BrandProfileValues, EffectiveConfig
 from mdcopilot_blog.domain.contracts import (
     ArticleSection,
-    AvoidBundle,
     ClaimCheck,
     ClinicalReview,
     Contract,
@@ -220,7 +218,6 @@ async def fact_check(
         article=article_text(version),
         numbered=numbered,
         route_override=route,
-        prompt_version=sc.config.prompt_versions.get(FACT_CHECK_SPEC.prompt_name),
     )
     verification_ids = []
     packet_source_count = len(sources)
@@ -264,7 +261,6 @@ async def fact_check(
                 verification_from=packet_source_count,
                 unsupported_claims=unsupported,
                 route_override=route,
-                prompt_version=sc.config.prompt_versions.get(FACT_CHECK_SPEC.prompt_name),
             )
     claims = []
     for extracted in result.output.claims:
@@ -330,7 +326,7 @@ def _review_result(row: Review) -> ReviewStepResult:
 
 
 async def _perform_review(
-    sc: StepContext, *, article_id: uuid.UUID, version_id: uuid.UUID, kind: str, avoid: AvoidBundle | None = None
+    sc: StepContext, *, article_id: uuid.UUID, version_id: uuid.UUID, kind: str
 ) -> ReviewStepResult:
     async with sc.sessionmaker() as db:
         existing = await _existing(db, sc, kind)
@@ -350,21 +346,16 @@ async def _perform_review(
             sc.gateway,
             **common,
             title=article.title or "",
-            prompt_version=sc.config.prompt_versions.get(CLINICAL_SPEC.prompt_name),
         )
         verdict = "BLOCKED" if any(f.severity == "BLOCKING" for f in result.output.flags) else "CLEAR"
     else:
-        if avoid is None:
-            raise ValueError("editorial review requires an avoid bundle")
         result = await run_editorial_reviewer(
             sc.gateway,
             **common,
-            avoid=avoid,
             word_count=sc.config.word_count,
             title_options=TitleOptions.model_validate(version.title_options),
             cta=version.cta,
             excerpt=version.excerpt,
-            prompt_version=sc.config.prompt_versions.get(EDITORIAL_SPEC.prompt_name),
         )
         verdict = "COMPLETED"
         score = result.output.editorial_score
@@ -392,10 +383,8 @@ async def clinical_review(sc: StepContext, *, article_id: uuid.UUID, version_id:
     return await _perform_review(sc, article_id=article_id, version_id=version_id, kind="clinical")
 
 
-async def editorial_review(
-    sc: StepContext, *, article_id: uuid.UUID, version_id: uuid.UUID, avoid: AvoidBundle
-) -> ReviewStepResult:
-    return await _perform_review(sc, article_id=article_id, version_id=version_id, kind="editorial", avoid=avoid)
+async def editorial_review(sc: StepContext, *, article_id: uuid.UUID, version_id: uuid.UUID) -> ReviewStepResult:
+    return await _perform_review(sc, article_id=article_id, version_id=version_id, kind="editorial")
 
 
 async def collect_revision_findings(
@@ -458,22 +447,6 @@ async def generate_seo(sc: StepContext, *, article_id: uuid.UUID, version_id: uu
             return SeoStepResult(seo_id=existing.id, version_id=version_id, slug=existing.slug)
         article, version = await load_article_version(db, article_id=article_id, version_id=version_id)
         sources = await load_packet_sources(db, article=article, version=version)
-        candidates = [
-            LinkCandidate(p.title, p.url)
-            for p in (
-                await db.scalars(select(ExternalPost).where(ExternalPost.published_at.is_not(None)).limit(30))
-            ).all()
-        ]
-        candidates += [
-            LinkCandidate(p.title or "", p.published_url or "")
-            for p in (
-                await db.scalars(
-                    select(Article)
-                    .where(Article.status == "PUBLISHED", Article.published_url.is_not(None), Article.id != article_id)
-                    .limit(30)
-                )
-            ).all()
-        ]
     numbered = number_sources(sources, preserve_order=True)
     cited = [source for source in numbered if source.marker in version.citation_markers]
     result = await run_seo_specialist(
@@ -486,9 +459,7 @@ async def generate_seo(sc: StepContext, *, article_id: uuid.UUID, version_id: uu
         title=article.title or "",
         excerpt=version.excerpt,
         numbered=cited,
-        link_candidates=candidates,
         route_override=sc.config.routes["seo"],
-        prompt_version=sc.config.prompt_versions.get(SEO_SPEC.prompt_name),
     )
     package = result.output
     package.seo.external_references = [str(value) for value in resolve_markers(package.seo.external_references, cited)]
@@ -501,11 +472,7 @@ async def generate_seo(sc: StepContext, *, article_id: uuid.UUID, version_id: uu
             return SeoStepResult(seo_id=existing.id, version_id=version_id, slug=existing.slug)
         head = await db.get(Article, article_id)
         slug, suffix = package.seo.slug, 1
-        while await db.scalar(
-            select(Article.id)
-            .where(Article.slug == slug, Article.id != article_id, Article.status.notin_(["REJECTED", "SUPERSEDED"]))
-            .limit(1)
-        ):
+        while await db.scalar(select(Article.id).where(Article.slug == slug, Article.id != article_id).limit(1)):
             suffix += 1
             slug = f"{package.seo.slug[:190]}-{suffix}"
         package.seo.slug = slug
@@ -555,9 +522,6 @@ async def _gate_inputs(
     config: EffectiveConfig,
     brand: BrandProfileValues,
 ) -> GateInputs:
-    from mdcopilot_blog.services.diversity import evaluate_diversity
-    from mdcopilot_blog.services.novelty import check_article_duplicate
-
     article, version = await load_article_version(db, article_id=article_id, version_id=version_id)
     sources = (
         await db.execute(
@@ -570,17 +534,8 @@ async def _gate_inputs(
     fact = await latest_review(db, version_id, "fact_check")
     clinical, clinical_resolved = await lineage_review(db, version, "clinical", ClinicalReview)
     editorial, editorial_resolved = await lineage_review(db, version, "editorial", EditorialReview)
-    diversity = await evaluate_diversity(db, version_id=version_id, config=config)
-    duplicate = await check_article_duplicate(db, version_id=version_id, config=config)
     slug_taken = bool(
-        seo
-        and await db.scalar(
-            select(Article.id)
-            .where(
-                Article.slug == seo.slug, Article.id != article_id, Article.status.notin_(["REJECTED", "SUPERSEDED"])
-            )
-            .limit(1)
-        )
+        seo and await db.scalar(select(Article.id).where(Article.slug == seo.slug, Article.id != article_id).limit(1))
     )
     return GateInputs(
         version_id=str(version_id),
@@ -604,9 +559,6 @@ async def _gate_inputs(
         clinical_resolved=clinical_resolved,
         editorial=editorial,
         editorial_resolved=editorial_resolved,
-        duplicate=duplicate,
-        cta_fresh=diversity.cta_fresh,
-        diversity_warnings=tuple(diversity.warnings),
         config=config,
         brand=brand,
     )
@@ -615,9 +567,6 @@ async def _gate_inputs(
 async def run_quality_gates(
     sc: StepContext, *, article_id: uuid.UUID, version_id: uuid.UUID, run_kind: GateRunKind, fix_pass_used: bool
 ) -> GateStepResult:
-    from mdcopilot_blog.services.diversity import record_version_features
-
-    await record_version_features(sc, version_id=version_id)
     async with sc.sessionmaker() as db:
         await db.execute(select(Article.id).where(Article.id == article_id).with_for_update())
         existing = await _existing(db, sc, "quality_gate")
@@ -630,7 +579,7 @@ async def run_quality_gates(
                 decision=decide_fix_pass(report, fix_pass_used=fix_pass_used),
             )
         inputs = await _gate_inputs(db, article_id=article_id, version_id=version_id, config=sc.config, brand=sc.brand)
-        report = evaluate_gates(inputs, run_kind=run_kind)
+        report = evaluate_gates(inputs)
         row = _review(
             sc,
             article_id,
@@ -648,28 +597,3 @@ async def run_quality_gates(
             report=report,
             decision=decide_fix_pass(report, fix_pass_used=fix_pass_used),
         )
-
-
-async def run_deterministic_gates(
-    db: AsyncSession,
-    *,
-    article_id: uuid.UUID,
-    version_id: uuid.UUID,
-    config: EffectiveConfig,
-    brand: BrandProfileValues,
-) -> GateReport:
-    inputs = await _gate_inputs(db, article_id=article_id, version_id=version_id, config=config, brand=brand)
-    report = evaluate_gates(inputs, run_kind=GateRunKind.DETERMINISTIC)
-    db.add(
-        _review(
-            None,
-            article_id,
-            version_id,
-            "quality_gate",
-            "PASSED" if report.passed else "FAILED",
-            report,
-            gate_run_kind="deterministic",
-        )
-    )
-    await db.flush()
-    return report

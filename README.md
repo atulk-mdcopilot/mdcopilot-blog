@@ -1,98 +1,78 @@
 # MDCopilot Blog
 
-Research topics, generate evidence-linked blog drafts, edit and review versions,
-then export or publish an approved version to a configured MDCopilot website.
+Internal service that turns a topic into a researched, fact-checked blog draft and saves it as a **draft in
+MDCopilot Blogs** (the mdcopilot-backend `blogs` table). It has no UI, no users and no database of its own.
+An MDCopilot ADMIN uses it from mdcopilot-frontend: **Admin -> Generate Blogs** (`/admin/blogs/generate`);
+the draft is then edited and published on the existing **Admin -> Blogs** pages.
+
+```text
+mdcopilot-frontend  ->  mdcopilot-backend /api/v1/admin/blog-agent/runs*   (require_admin_access)
+                              |  X-Internal-Token + X-On-Behalf-Of: <users.id>
+                              v
+                        blog api (http://blog-api:8000)  --DBOS queue-->  blog worker
+                                                                              |  POST /internal/v1/blog/drafts
+                                                                              v
+                                                                        mdcopilot-backend blogs (status=draft)
+```
+
+Details: [docs/architecture.md](docs/architecture.md) (API, pipeline, tables, settings) and
+[docs/business_logic.md](docs/business_logic.md) (what the pipeline checks and why).
 
 ## Run
 
-All commands run in Docker. The only Compose file is `docker-compose.yml`.
+Everything runs in Docker. Never run Python on the host.
 
-1. Start the MDCopilot root stack first (`docker compose up -d` in the workspace root).
-   The blog has no database of its own: it uses the mdcopilot-backend Postgres
-   (`DATABASE_URL` in `docker-compose.yml`) over the `mdcopilot_mdcopilot-network` network.
-2. Copy `.env.example` to `.env`. Set a `SESSION_SECRET` of
-   at least 32 characters (`openssl rand -hex 32`), and administrator credentials.
-3. Configure `OPENAI_API_KEY` and `GEMINI_API_KEY` for generation. Anthropic and
-   PubMed keys are optional. Missing provider keys do not prevent editing existing drafts.
-4. Build and start:
+1. Start the MDCopilot root stack first (`docker compose up -d` in the workspace root). The blog uses its
+   Postgres and its network (`mdcopilot_mdcopilot-network`), and the root `docker-compose.yml` already gives
+   the backend `BLOG_AGENT_INTERNAL_URL=http://blog-api:8000` and the matching token.
+2. Copy `.env.example` to `.env` and fill in `OPENAI_API_KEY` (required: web search). `GEMINI_API_KEY` is
+   optional but recommended (the default research and review routes put Gemini first; a provider without a key
+   is skipped). Anthropic and NCBI keys are optional.
+3. `docker compose up -d --build --wait` in this directory.
 
-   ```sh
-   docker compose up -d --build --wait
-   docker compose exec api sh -c 'python -m mdcopilot_blog.cli create-admin --email "$BOOTSTRAP_ADMIN_EMAIL" --display-name Owner'
-   ```
+Services: `api` (applies migrations on startup: `alembic upgrade head`, DBOS system tables, seed, prompt
+sync; then serves; network alias `blog-api`, no host port) and `worker` (starts once the api is healthy). `docker-compose.yml` sets `DATABASE_URL` and the
+development service tokens; they must match the root stack (`BLOG_INTERNAL_TOKEN` = backend
+`BLOG_AGENT_INTERNAL_TOKEN`, `BACKEND_INTERNAL_TOKEN` = backend `INTERNAL_TOKEN`).
 
-Open http://localhost:8310 and sign in. Migrations, default configuration and
-versioned prompts are loaded before the API and worker start. Data lives in the
-mdcopilot-backend database: `blog_*` tables, Alembic history in `blog_alembic_versions`
-(separate from the backend `alembic_version`), and DBOS state in schema `blog_dbos`.
+Data lives in the mdcopilot-backend database: 20 `blog_*` tables, Alembic history in `blog_alembic_versions`
+(separate from the backend's `alembic_version`) and DBOS state in schema `blog_dbos`. Blog data is
+disposable working state; the finished article lives in the backend `blogs` table.
 
-The Generate page accepts a specific topic; the dashboard can discover one.
-Research leads to a draft with citations, fact checking, editorial review and SEO.
-Edits create a new version that must be checked and approved before publication.
-Generation progress and recovery controls are available from the dashboard.
-
-## Publishing and configuration
-
-`manual_export` is the default publisher: download the article, publish it through
-your website, then confirm its public URL in the editor.
-
-For the existing MDCopilot API integration, set `BLOG_PUBLISHER=mdcopilot_api`,
-`BLOG_PUBLISHING_ENABLED=true`, the API/public URLs and login credentials in `.env`,
-then recreate the containers. The editor supports immediate or scheduled publishing
-of an explicitly approved version. An arbitrary website URL alone is not a publishing API.
-
-Settings controls automatic/manual topic selection. Source feeds, domain rules and
-research themes are configurable in Sources. Additional environment options and
-defaults live in `backend/src/mdcopilot_blog/settings.py`; content defaults live in
-`backend/src/mdcopilot_blog/db/seed_data/`. Stored settings take precedence over
-environment content defaults. Provider keys and publishing switches stay in `.env`.
-
-For HTTPS deployment, configure a reverse proxy and set `APP_ENV=production`,
-`PUBLIC_APP_URL`, `PUBLIC_PROXY_SCHEME=https` and `SESSION_COOKIE_SECURE=true`.
-Host ports bind to localhost. The database is the mdcopilot-backend database.
+One run = one topic, about 5 minutes and roughly 0.5 USD with the default routes. Runs execute one at a time
+(worker concurrency 1) and each is capped by `BLOG_AGENT_MAX_COST_PER_RUN_USD`.
 
 ## Code layout
 
 ```text
 backend/
   src/mdcopilot_blog/
-    api/          HTTP routes and request/response models
-    auth/         Login, sessions and permissions
-    db/           Database models and default configuration
-    domain/       Article contracts, scoring and quality rules
-    research/     Search, source collection and evidence extraction
-    agents/       Prompts and structured generation/review calls
-    llm/          Provider calls, concurrency and spending limits
-    workflows/    Durable generation, regeneration and publishing jobs
-    services/     Article, topic, review and publishing operations
-    publishing/   HTML export and the MDCopilot API adapter
-  prompts/        Versioned prompt text
-  migrations/     Existing database migration history
-frontend/src/
-  routes/         Dashboard, generation, research, editor and settings
-  features/       Blog UI components and API calls
-  components/ui/  Shared UI primitives
-  lib/           HTTP client, query client and wire types
+    api/          4 run routes + health, internal-token dependency
+    workflows/    DBOS workflows discover_topics (manual topic) and produce_article
+    services/     the work done inside each workflow step
+    agents/       deep research analyst, writer, fact checker, clinical, editorial and SEO reviewers
+    research/     web search, page retrieval (SSRF guard, robots), extraction, PubMed, source ledger
+    llm/          provider calls, route fallback, price recording, per-run budget guard
+    domain/       article structure, quality gates, state machine, contracts
+    publishing/   Markdown -> sanitised HTML renderer, mdcopilot-backend draft client
+    db/           models, engine, seed data (brand profile, pillars, source domains, price override)
+  prompts/        versioned prompt text (immutable once registered; add a new version to change one)
+  migrations/     one Alembic revision, 0001
 ```
-
-FastAPI enqueues work through DBOS; a separate worker executes it and persists
-progress in PostgreSQL. PostgreSQL/pgvector also stores drafts, evidence, versions,
-reviews and duplicate-detection embeddings. Nginx serves the React/Vite build and
-proxies the API. Spending records remain because generation uses them to enforce budgets.
 
 ## Maintenance
 
 ```sh
-docker compose build
 docker compose logs --tail=100 api worker
-docker compose stop
+docker compose exec api python -m mdcopilot_blog.cli migrate   # also: migrate-dbos, seed, sync-prompts
+docker build --target dev -t mdcopilot-blog-backend:dev-tmp backend   # image with ruff, for lint/format
 ```
 
-Back up the mdcopilot-backend database; the blog has no separate database. The migration
-history still creates the historical `blog_calendar_slots`/`blog_notifications` tables that the
-application no longer uses. Removing those tables can be handled
-later through an explicit data migration.
+Changing workflow steps requires a new `APP_VERSION`: DBOS only recovers workflows of the running version.
 
-Changing workflow step order requires a new `APP_VERSION`; interrupted jobs from
-an older version can be recovered through the run controls. Keep registered prompt
-versions immutable and add a new prompt version when changing their text.
+## Removed in the 2026-09-22 minimization
+
+The standalone React app (`frontend/`, `web` service), own login/sessions/CSRF/roles, audit log, settings and
+sources screens, topic discovery and daily schedules, novelty/duplicate detection and embeddings (pgvector),
+article editing/regeneration/approval, manual export, scheduling and the login-based publisher. The UI now
+lives in mdcopilot-frontend; authentication is mdcopilot-backend's ADMIN check.

@@ -58,7 +58,7 @@ class OpenAIWebSearchProvider:
     async def search(self, query: SearchQuery) -> OpenAISearchResult:
         if len(query.allowed_domains) > MAX_ALLOWED_DOMAINS:
             raise ValueError("allowed_domains accepts at most 100 domains")
-        if query.mode in ("broad", "verification"):
+        if query.mode == "verification":
             size = self._settings.search_context_size_broad
             max_calls = self._settings.search_max_tool_calls_broad
         else:

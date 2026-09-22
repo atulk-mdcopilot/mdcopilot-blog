@@ -1,25 +1,12 @@
-"""Versioned settings, versioned brand profile and content pillars."""
+"""Versioned brand profile and content pillars."""
 
-import uuid
 from typing import Any
 
-from sqlalchemy import ForeignKey, Index, String, Text, text
+from sqlalchemy import Index, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from mdcopilot_blog.db.base import Base, CreatedAt, Timestamps, UUIDPk
-
-
-class BlogSetting(UUIDPk, CreatedAt, Base):
-    """One row per saved settings version; at most one row is active."""
-
-    __tablename__ = "blog_settings"
-    __table_args__ = (Index("uq_blog_settings_active", "is_active", unique=True, postgresql_where=text("is_active")),)
-
-    version: Mapped[int] = mapped_column(unique=True)
-    values: Mapped[dict[str, Any]]
-    is_active: Mapped[bool] = mapped_column(default=False, server_default=text("false"))
-    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("blog_users.id", ondelete="SET NULL"))
 
 
 class BrandProfile(UUIDPk, CreatedAt, Base):
@@ -33,7 +20,6 @@ class BrandProfile(UUIDPk, CreatedAt, Base):
     version: Mapped[int] = mapped_column(unique=True)
     profile: Mapped[dict[str, Any]]
     is_active: Mapped[bool] = mapped_column(default=False, server_default=text("false"))
-    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("blog_users.id", ondelete="SET NULL"))
 
 
 class ContentPillar(UUIDPk, Timestamps, Base):

@@ -1,4 +1,4 @@
-"""LLM gateway: every model, web-search and embedding call goes through here.
+"""LLM gateway: every model and web-search call goes through here.
 
 ``run()`` walks the configured route itself (no FallbackModel). Each attempt writes exactly one
 ``blog_llm_calls`` row. Calls share the same recording and budget enforcement path.
@@ -27,7 +27,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from mdcopilot_blog.domain.enums import AgentName, CallKind, CallStatus
 from mdcopilot_blog.domain.errors import OutputRejected
 from mdcopilot_blog.llm.concurrency import ProviderLimiter, process_limiter
-from mdcopilot_blog.llm.embeddings import EMBED_BATCH_SIZE, GeminiEmbeddingProvider, batched
 from mdcopilot_blog.llm.pricing import (
     REAL_PROVIDERS,
     SEARCH_FEE_SKU,
@@ -36,11 +35,10 @@ from mdcopilot_blog.llm.pricing import (
     PriceMissing,
     TokenUsage,
     price_agent_attempt,
-    price_embedding_call,
     price_search_call,
 )
 from mdcopilot_blog.llm.recorder import PRICE_VERSION, CallRecord, CallRecorder
-from mdcopilot_blog.llm.routes import ModelChoice, model_settings_for, parse_choice, route_for, route_from_entries
+from mdcopilot_blog.llm.routes import ModelChoice, model_settings_for, route_for, route_from_entries
 from mdcopilot_blog.llm.search.base import SearchQuery, SearchResult, WebSearchProvider
 from mdcopilot_blog.prompts.registry import PromptRegistry, RenderedPrompt
 from mdcopilot_blog.settings import Settings
@@ -215,7 +213,6 @@ class LLMGateway:
         search_provider: WebSearchProvider,
         limiter: ProviderLimiter,
         price_book: DbPriceBook,
-        embedding_provider: GeminiEmbeddingProvider | None = None,
     ) -> None:
         self._settings = settings
         self._prompts = prompts
@@ -224,7 +221,6 @@ class LLMGateway:
         self._search_provider = search_provider
         self._limiter = limiter
         self._price_book = price_book
-        self._embedding_provider = embedding_provider
 
     async def _check_budget(self, ctx: CallContext) -> None:
         if ctx.run_id is None and ctx.attempt_id is None:
@@ -312,11 +308,10 @@ class LLMGateway:
         user_prompt: str,
         ctx: CallContext,
         route_override: Sequence[str] | None = None,
-        prompt_version: int | None = None,
         output_check: Callable[[OutputT], None] | None = None,
     ) -> AgentResult[OutputT]:
         await self._check_budget(ctx)
-        rendered = self._prompts.render(spec.prompt_name, variables, version=prompt_version)
+        rendered = self._prompts.render(spec.prompt_name, variables)
         if route_override is None:
             route = route_for(self._settings, spec.name)
         else:
@@ -520,69 +515,6 @@ class LLMGateway:
         )
         return result
 
-    async def embed(self, texts: Sequence[str], *, ctx: CallContext) -> list[list[float]]:
-        if not texts:
-            return []
-        choice = parse_choice(self._settings.embedding_model)
-        dimensions = self._settings.embedding_dimensions
-        vectors: list[list[float]] = []
-        for batch in batched(texts, EMBED_BATCH_SIZE):
-            await self._check_budget(ctx)
-            if self._embedding_provider is None:
-                raise ProviderNotAvailable(
-                    "no embedding provider is configured (needs GEMINI_API_KEY and a google: embedding model)"
-                )
-            started = time.perf_counter()
-
-            try:
-                async with self._limiter.slot(choice.provider):
-                    result = await self._embedding_provider.embed(batch, dimensions=dimensions)
-            except Exception as exc:
-                await self._recorder.record(
-                    CallRecord(
-                        kind=CallKind.EMBEDDING,
-                        ctx=ctx,
-                        provider_requested=choice.provider,
-                        model_requested=choice.model,
-                        attempt_index=0,
-                        status=CallStatus.ERROR,
-                        latency_ms=_elapsed_ms(started),
-                        params={"dimensions": dimensions, "count": len(batch)},
-                        error_class=type(exc).__name__,
-                        error_message=str(exc),
-                    )
-                )
-                raise
-            priced = await price_embedding_call(
-                self._price_book,
-                provider=choice.provider,
-                model=choice.model,
-                input_tokens=result.input_tokens,
-                at=datetime.now(UTC),
-            )
-            usage_raw: dict[str, object] = dict(result.usage_details)
-            usage_raw["pricing"] = priced.source
-            await self._recorder.record(
-                CallRecord(
-                    kind=CallKind.EMBEDDING,
-                    ctx=ctx,
-                    provider_requested=choice.provider,
-                    model_requested=choice.model,
-                    attempt_index=0,
-                    status=CallStatus.OK,
-                    latency_ms=_elapsed_ms(started),
-                    provider_served=result.provider,
-                    model_served=result.model,
-                    params={"dimensions": dimensions, "count": len(batch)},
-                    input_tokens=result.input_tokens,
-                    cost_usd=priced.cost_usd,
-                    price_version=priced.price_version,
-                    usage_raw=usage_raw,
-                )
-            )
-            vectors.extend(result.vectors)
-        return vectors
-
 
 def build_gateway(
     settings: Settings,
@@ -590,17 +522,12 @@ def build_gateway(
     prompts: PromptRegistry,
 ) -> LLMGateway:
     search_provider: WebSearchProvider
-    embedding_provider: GeminiEmbeddingProvider | None = None
     try:
         from mdcopilot_blog.llm.search.openai import OpenAIWebSearchProvider
 
         search_provider = OpenAIWebSearchProvider(settings)
     except ProviderNotAvailable:
         search_provider = UnavailableSearchProvider()
-    try:
-        embedding_provider = GeminiEmbeddingProvider(settings)
-    except ProviderNotAvailable:
-        embedding_provider = None
     from mdcopilot_blog.llm.pricing import DbPriceBook, ensure_price_updates
     from mdcopilot_blog.llm.providers import RealModelFactory
 
@@ -613,5 +540,4 @@ def build_gateway(
         search_provider=search_provider,
         limiter=process_limiter(settings.provider_concurrency),
         price_book=DbPriceBook(sessionmaker),
-        embedding_provider=embedding_provider,
     )

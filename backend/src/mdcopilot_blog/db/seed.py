@@ -1,4 +1,4 @@
-"""Idempotent default data: settings v1, brand profile v1, the six content pillars and the catalogues.
+"""Idempotent default data: brand profile v1, the six content pillars, source domains and price overrides.
 
 The YAML files in ``db/seed_data/`` are package data, read with ``importlib.resources``.
 ``seed_defaults`` only flushes; the caller commits. Existing rows (including edited ones)
@@ -15,35 +15,22 @@ import yaml
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from mdcopilot_blog.db.models import (
-    BlogSetting,
-    BrandProfile,
-    ContentPillar,
-    DiscoveryTheme,
-    PriceOverride,
-    SourceDomain,
-    SourceFeed,
-)
+from mdcopilot_blog.db.models import BrandProfile, ContentPillar, PriceOverride, SourceDomain
 from mdcopilot_blog.domain.contracts import SourceType
-from mdcopilot_blog.domain.enums import FeedKind
 from mdcopilot_blog.ids import uuid7
 
 SEED_VERSION = 1
 
 _HEADER_PROFILES = ("default", "browser_like")
 _FETCH_POLICIES = ("fetch", "metadata_only", "never")
-_FEED_KINDS = tuple(kind.value for kind in FeedKind)
 _SOURCE_TYPES = tuple(kind.value for kind in SourceType)
 
 
 @dataclass(frozen=True)
 class SeedReport:
-    settings_created: bool
     brand_created: bool
     pillars_created: int
-    feeds_created: int = 0
     domains_created: int = 0
-    themes_created: int = 0
     price_overrides_created: int = 0
 
 
@@ -76,23 +63,6 @@ def _tier(value: Any, file: str, index: int) -> int:
     return tier
 
 
-def _feed(file: str, index: int, item: dict[str, Any]) -> SourceFeed:
-    return SourceFeed(
-        name=str(_required(item, file, index, "name")),
-        url=str(_required(item, file, index, "url")),
-        kind=_allowed(_required(item, file, index, "kind"), file, index, "kind", _FEED_KINDS),
-        group_name=str(_required(item, file, index, "group")),
-        tier=_tier(_required(item, file, index, "tier"), file, index),
-        source_type=_allowed(_required(item, file, index, "source_type"), file, index, "source_type", _SOURCE_TYPES),
-        pillar_keys=[str(key) for key in item.get("pillar_keys", [])],
-        theme_keys=[str(key) for key in item.get("theme_keys", [])],
-        header_profile=_allowed(item.get("header_profile", "default"), file, index, "header_profile", _HEADER_PROFILES),
-        quirks=dict(item.get("quirks", {})),
-        is_enabled=bool(item.get("is_enabled", True)),
-        is_preprint=bool(item.get("is_preprint", False)),
-    )
-
-
 def _domain(file: str, index: int, item: dict[str, Any]) -> SourceDomain:
     domain = str(_required(item, file, index, "domain"))
     if domain != domain.lower():
@@ -106,18 +76,6 @@ def _domain(file: str, index: int, item: dict[str, Any]) -> SourceDomain:
         fetch_policy=_allowed(item.get("fetch_policy", "fetch"), file, index, "fetch_policy", _FETCH_POLICIES),
         verification_allowlisted=bool(item.get("verification_allowlisted", False)),
         notes=item.get("notes"),
-    )
-
-
-def _theme(file: str, index: int, item: dict[str, Any]) -> DiscoveryTheme:
-    return DiscoveryTheme(
-        key=str(_required(item, file, index, "key")),
-        name=str(_required(item, file, index, "name")),
-        description=str(item.get("description", "")),
-        query_templates=[str(template) for template in _required(item, file, index, "query_templates")],
-        pillar_keys=[str(key) for key in item.get("pillar_keys", [])],
-        is_active=True,
-        sort_order=int(item.get("sort_order", index)),
     )
 
 
@@ -159,11 +117,6 @@ def _price_override(file: str, index: int, item: dict[str, Any]) -> PriceOverrid
 
 async def seed_defaults(session: AsyncSession) -> SeedReport:
     """Insert whatever is missing. Existing rows (including edited ones) are never touched."""
-    settings_created = False
-    if await session.scalar(select(BlogSetting.id).limit(1)) is None:
-        session.add(BlogSetting(version=SEED_VERSION, values=load_seed_file("settings.yaml"), is_active=True))
-        settings_created = True
-
     brand_created = False
     if await session.scalar(select(BrandProfile.id).limit(1)) is None:
         session.add(BrandProfile(version=SEED_VERSION, profile=load_seed_file("brand_profile.yaml"), is_active=True))
@@ -188,15 +141,6 @@ async def seed_defaults(session: AsyncSession) -> SeedReport:
         )
         pillars_created += 1
 
-    feeds_created = 0
-    existing_feed_urls = set((await session.scalars(select(SourceFeed.url))).all())
-    for index, item in enumerate(load_seed_file("feeds.yaml")["feeds"]):
-        feed = _feed("feeds.yaml", index, item)
-        if feed.url in existing_feed_urls:
-            continue
-        session.add(feed)
-        feeds_created += 1
-
     domains_created = 0
     existing_domains = set((await session.scalars(select(SourceDomain.domain))).all())
     for index, item in enumerate(load_seed_file("domains.yaml")["domains"]):
@@ -205,15 +149,6 @@ async def seed_defaults(session: AsyncSession) -> SeedReport:
             continue
         session.add(domain)
         domains_created += 1
-
-    themes_created = 0
-    existing_theme_keys = set((await session.scalars(select(DiscoveryTheme.key))).all())
-    for index, item in enumerate(load_seed_file("themes.yaml")["themes"]):
-        theme = _theme("themes.yaml", index, item)
-        if theme.key in existing_theme_keys:
-            continue
-        session.add(theme)
-        themes_created += 1
 
     price_overrides_created = 0
     existing_overrides = set(
@@ -230,11 +165,8 @@ async def seed_defaults(session: AsyncSession) -> SeedReport:
 
     await session.flush()
     return SeedReport(
-        settings_created=settings_created,
         brand_created=brand_created,
         pillars_created=pillars_created,
-        feeds_created=feeds_created,
         domains_created=domains_created,
-        themes_created=themes_created,
         price_overrides_created=price_overrides_created,
     )

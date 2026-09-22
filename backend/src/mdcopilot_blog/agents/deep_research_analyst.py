@@ -49,7 +49,6 @@ async def run_deep_research_analyst(
         user_prompt="# Topic\n" + json.dumps(topic) + "\n# Sources\n" + render_source_list(numbered, include_text=True),
         ctx=ctx,
         route_override=config.routes["deep_research"],
-        prompt_version=config.prompt_versions.get(DEEP_RESEARCH_SPEC.prompt_name),
         output_check=validate,
     )
     result.output.source_refs = [SourceRef(marker=s.marker, source_id=str(s.source_id)) for s in numbered]

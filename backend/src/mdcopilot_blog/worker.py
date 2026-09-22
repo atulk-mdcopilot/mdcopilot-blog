@@ -8,22 +8,16 @@ import contextlib
 import logging
 import os
 import signal
-from datetime import UTC, datetime
 from pathlib import Path
 
 from dbos import DBOS
 
 from mdcopilot_blog.logs import configure_logging
 from mdcopilot_blog.settings import Settings, get_settings
-from mdcopilot_blog.workflows import human_actions  # noqa: F401 -- register before DBOS launch
-from mdcopilot_blog.workflows.automation import apply_maintenance_schedules, effective_schedule_settings
+from mdcopilot_blog.workflows import discover  # noqa: F401 -- register workflows before DBOS launch
 from mdcopilot_blog.workflows.dbos_config import build_dbos_config
-from mdcopilot_blog.workflows.names import HEARTBEAT_FILE, QUEUE_INTERACTIVE, QUEUE_PIPELINE
-from mdcopilot_blog.workflows.retention import apply_retention_schedule
+from mdcopilot_blog.workflows.names import HEARTBEAT_FILE, QUEUE_PIPELINE
 from mdcopilot_blog.workflows.runtime import build_runtime, set_runtime
-
-# Importing schedules registers discovery and schedule workflows before DBOS.launch().
-from mdcopilot_blog.workflows.schedules import apply_daily_schedule, catch_up_today
 
 logger = logging.getLogger("mdcopilot_blog.worker")
 
@@ -31,7 +25,6 @@ HEARTBEAT_INTERVAL_SECONDS = 10.0
 # compose stop_grace_period (60 s) must stay above this
 WORKFLOW_COMPLETION_TIMEOUT_SECONDS = 25
 PIPELINE_CONCURRENCY = 1
-INTERACTIVE_CONCURRENCY = 4
 
 
 async def heartbeat_loop(
@@ -67,16 +60,8 @@ async def _run_dbos(settings: Settings, stop: asyncio.Event) -> None:
             "DBOS launched",
             extra={"executor_id": settings.worker_executor_id, "application_version": settings.app_version},
         )
-        # dbos 3.0: queues can only be registered after launch
+        # dbos 3.0: a queue can only be registered after launch
         await DBOS.register_queue_async(QUEUE_PIPELINE, worker_concurrency=PIPELINE_CONCURRENCY)
-        await DBOS.register_queue_async(QUEUE_INTERACTIVE, worker_concurrency=INTERACTIVE_CONCURRENCY)
-        effective = await effective_schedule_settings()
-        await apply_daily_schedule(effective)
-        await apply_maintenance_schedules(effective.timezone)
-        await apply_retention_schedule(effective)
-        caught_up = await catch_up_today(effective, datetime.now(UTC))
-        if caught_up is not None:
-            logger.info("started today's missed daily run", extra={"workflow_id": caught_up})
 
         heartbeat = asyncio.create_task(heartbeat_loop(stop))
         logger.info("worker ready")

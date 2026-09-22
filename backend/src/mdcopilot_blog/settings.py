@@ -4,7 +4,7 @@ Compose passes `.env` to every backend container through `env_file`, so the load
 `os.environ` (`env_file=None`). Every field names its variable with `validation_alias`, using exactly
 the names in `.env.example` (no prefix).
 
-`validate_by_name` is deliberately not set: a variable spelled like a field name (e.g. `TIMEZONE`) is
+`validate_by_name` is deliberately not set: a variable spelled like a field name (e.g. `WORD_COUNT_MIN`) is
 never read, only the alias names below. Code that needs a variant uses `model_copy(update=…)`.
 
 Secrets are `SecretStr`. They never appear in repr, logs or validation errors (`hide_input_in_errors=True`).
@@ -14,15 +14,13 @@ import re
 from decimal import Decimal
 from functools import lru_cache
 from typing import Annotated, Literal, Self
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from urllib.parse import urlsplit
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from sqlalchemy import URL, make_url
 
-MIN_SESSION_SECRET_LENGTH = 32
 LOG_LEVELS = frozenset({"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"})
-_HH_MM = re.compile(r"(?:[01]\d|2[0-3]):[0-5]\d")
 _OPENAI_GPT_VERSION = re.compile(r"^openai:gpt-(\d+)(?:\.(\d+))?", re.IGNORECASE)
 MAX_OPENAI_GPT_VERSION = (5, 4)
 
@@ -31,8 +29,6 @@ RouteList = Annotated[list[str], NoDecode]
 
 ROUTE_FIELDS = (
     "search_route",
-    "research_route",
-    "ideation_route",
     "deep_research_route",
     "writer_route",
     "fact_check_route",
@@ -56,10 +52,13 @@ class Settings(BaseSettings):
     app_version: str = Field("0.1.0", validation_alias="APP_VERSION")
     log_level: str = Field("INFO", validation_alias="LOG_LEVEL")
 
-    # --- Sessions ---
-    session_secret: SecretStr = Field(validation_alias="SESSION_SECRET")
-    session_cookie_secure: bool = Field(False, validation_alias="SESSION_COOKIE_SECURE")
-    public_app_url: str = Field("http://localhost:8310", validation_alias="PUBLIC_APP_URL")
+    # --- Internal service auth: the shared token mdcopilot-backend sends as X-Internal-Token ---
+    blog_internal_token: SecretStr | None = Field(None, validation_alias="BLOG_INTERNAL_TOKEN")
+
+    # --- mdcopilot-backend internal ingest: where the worker saves the finished draft ---
+    backend_internal_url: str | None = Field(None, validation_alias="BACKEND_INTERNAL_URL")
+    backend_internal_token: SecretStr | None = Field(None, validation_alias="BACKEND_INTERNAL_TOKEN")
+    backend_timeout_seconds: float = Field(20.0, gt=0, validation_alias="BACKEND_TIMEOUT_SECONDS")
 
     # --- Database: the mdcopilot-backend database (same DATABASE_URL format the backend uses) ---
     database_dsn: SecretStr = Field(validation_alias="DATABASE_URL")
@@ -73,16 +72,10 @@ class Settings(BaseSettings):
 
     # --- Flags (environment-only safety switches) ---
     agent_enabled: bool = Field(True, validation_alias="BLOG_AGENT_ENABLED")
-    scheduler_enabled: bool = Field(False, validation_alias="BLOG_AGENT_SCHEDULER_ENABLED")
-    human_approval_required: bool = Field(True, validation_alias="BLOG_HUMAN_APPROVAL_REQUIRED")
-    publishing_enabled: bool = Field(False, validation_alias="BLOG_PUBLISHING_ENABLED")
 
-    # --- Schedule and content ---
-    daily_run_time: str = Field("07:00", validation_alias="BLOG_AGENT_DAILY_RUN_TIME")
-    timezone: str = Field("Asia/Kolkata", validation_alias="BLOG_AGENT_TIMEZONE")
+    # --- Content ---
     research_window_days: int = Field(7, ge=1, validation_alias="BLOG_AGENT_RESEARCH_WINDOW_DAYS")
     min_source_count: int = Field(5, ge=1, validation_alias="BLOG_AGENT_MIN_SOURCE_COUNT")
-    novelty_threshold: float = Field(0.85, ge=0, le=1, validation_alias="BLOG_AGENT_NOVELTY_THRESHOLD")
     word_count_min: int = Field(850, ge=1, validation_alias="BLOG_AGENT_WORD_COUNT_MIN")
     word_count_max: int = Field(1150, ge=1, validation_alias="BLOG_AGENT_WORD_COUNT_MAX")
     site_url: str = Field("https://www.mdcopilot.health", validation_alias="BLOG_SITE_URL")
@@ -92,18 +85,6 @@ class Settings(BaseSettings):
     search_route: RouteList = Field(
         default_factory=lambda: ["openai:gpt-5.4-mini"],
         validation_alias="BLOG_AGENT_SEARCH_ROUTE",
-    )
-    research_route: RouteList = Field(
-        default_factory=lambda: ["google:gemini-3.8-flash", "openai:gpt-5.4-mini"],
-        validation_alias="BLOG_AGENT_RESEARCH_ROUTE",
-    )
-    ideation_route: RouteList = Field(
-        default_factory=lambda: [
-            "google:gemini-3.5-flash-lite",
-            "google:gemini-3.8-flash",
-            "openai:gpt-5.4-mini",
-        ],
-        validation_alias="BLOG_AGENT_IDEATION_ROUTE",
     )
     deep_research_route: RouteList = Field(
         default_factory=lambda: ["google:gemini-3.8-flash", "openai:gpt-5.4-mini"],
@@ -137,8 +118,6 @@ class Settings(BaseSettings):
         default_factory=lambda: ["google:gemini-3.5-flash-lite", "openai:gpt-5.4-mini"],
         validation_alias="BLOG_AGENT_SEO_ROUTE",
     )
-    embedding_model: str = Field("google:gemini-embedding-2", validation_alias="BLOG_AGENT_EMBEDDING_MODEL")
-    embedding_dimensions: int = Field(1536, ge=1, validation_alias="BLOG_AGENT_EMBEDDING_DIMENSIONS")
     provider_concurrency: int = Field(4, ge=1, validation_alias="BLOG_AGENT_PROVIDER_CONCURRENCY")
     search_context_size_broad: Literal["low", "medium", "high"] = Field(
         "low", validation_alias="BLOG_AGENT_SEARCH_CONTEXT_SIZE_BROAD"
@@ -163,19 +142,6 @@ class Settings(BaseSettings):
     fetch_max_redirects: int = Field(5, ge=0, le=10, validation_alias="BLOG_FETCH_MAX_REDIRECTS")
     fetch_per_host_limit: int = Field(2, ge=1, le=2, validation_alias="BLOG_FETCH_PER_HOST_LIMIT")
     robots_cache_hours: int = Field(24, ge=1, validation_alias="BLOG_FETCH_ROBOTS_CACHE_HOURS")
-    dbos_retention_days: int = Field(30, ge=1, validation_alias="BLOG_DBOS_RETENTION_DAYS")
-    source_snapshot_retention_days: int = Field(365, ge=1, validation_alias="BLOG_SOURCE_SNAPSHOT_RETENTION_DAYS")
-
-    # --- MDCopilot integration ---
-    mdcopilot_public_api_url: str | None = Field(None, validation_alias="BLOG_MDCOPILOT_PUBLIC_API_URL")
-    mdcopilot_sync_page_size: int = Field(50, ge=1, le=100, validation_alias="BLOG_MDCOPILOT_SYNC_PAGE_SIZE")
-    publisher: Literal["manual_export", "mdcopilot_api"] = Field("manual_export", validation_alias="BLOG_PUBLISHER")
-    publisher_api_url: str = Field("http://host.docker.internal:8000/api/v1", validation_alias="BLOG_PUBLISHER_API_URL")
-    publisher_login_id: str | None = Field(None, validation_alias="BLOG_PUBLISHER_LOGIN_ID")
-    publisher_password: SecretStr | None = Field(None, validation_alias="BLOG_PUBLISHER_PASSWORD")
-    publisher_public_url: str = Field("http://localhost:3000", validation_alias="BLOG_PUBLISHER_PUBLIC_URL")
-    publisher_login_path: str = Field("/auth/login", pattern=r"^/", validation_alias="BLOG_PUBLISHER_LOGIN_PATH")
-    publisher_timeout_seconds: float = Field(20.0, gt=0, validation_alias="BLOG_PUBLISHER_TIMEOUT_SECONDS")
 
     # --- Worker ---
     worker_executor_id: str = Field("worker-1", validation_alias="WORKER_EXECUTOR_ID")
@@ -192,30 +158,15 @@ class Settings(BaseSettings):
             raise ValueError(f"LOG_LEVEL must be one of {sorted(LOG_LEVELS)}")
         return value
 
-    @field_validator("session_secret")
+    @field_validator("backend_internal_url")
     @classmethod
-    def _check_session_secret(cls, value: SecretStr) -> SecretStr:
-        if len(value.get_secret_value()) < MIN_SESSION_SECRET_LENGTH:
-            raise ValueError(
-                f"SESSION_SECRET must be at least {MIN_SESSION_SECRET_LENGTH} characters (openssl rand -hex 32)"
-            )
-        return value
-
-    @field_validator("daily_run_time")
-    @classmethod
-    def _check_daily_run_time(cls, value: str) -> str:
-        if _HH_MM.fullmatch(value) is None:
-            raise ValueError("BLOG_AGENT_DAILY_RUN_TIME must be HH:MM (00:00 to 23:59)")
-        return value
-
-    @field_validator("timezone")
-    @classmethod
-    def _check_timezone(cls, value: str) -> str:
-        try:
-            ZoneInfo(value)
-        except (ZoneInfoNotFoundError, ValueError, OSError) as exc:
-            raise ValueError(f"unknown timezone {value!r} (use an IANA name such as Asia/Kolkata)") from exc
-        return value
+    def _check_backend_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        parsed = urlsplit(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("BACKEND_INTERNAL_URL must be an http(s) URL such as http://backend:8000")
+        return value.rstrip("/")
 
     @field_validator(*ROUTE_FIELDS, mode="before")
     @classmethod
@@ -239,12 +190,6 @@ class Settings(BaseSettings):
         return value
 
     @model_validator(mode="after")
-    def _approval_is_mandatory(self) -> Self:
-        if not self.human_approval_required:
-            raise ValueError("BLOG_HUMAN_APPROVAL_REQUIRED=false is not allowed")
-        return self
-
-    @model_validator(mode="after")
     def _check_word_counts(self) -> Self:
         if self.word_count_min >= self.word_count_max:
             raise ValueError("BLOG_AGENT_WORD_COUNT_MIN must be less than BLOG_AGENT_WORD_COUNT_MAX")
@@ -263,17 +208,10 @@ class Settings(BaseSettings):
         """
         return self.database_url().render_as_string(hide_password=False)
 
-    @property
-    def session_cookie_name(self) -> str:
-        """`__Host-` cookies require Secure, so the prefix is only used when secure cookies are on."""
-        return "__Host-mdcb_session" if self.session_cookie_secure else "mdcb_session"
-
     def route_values(self) -> dict[str, list[str]]:
         """Agent key (AgentName value) -> configured route. Returns copies, so callers cannot mutate settings."""
         return {
             "search": list(self.search_route),
-            "research": list(self.research_route),
-            "ideation": list(self.ideation_route),
             "deep_research": list(self.deep_research_route),
             "writer": list(self.writer_route),
             "fact_check": list(self.fact_check_route),

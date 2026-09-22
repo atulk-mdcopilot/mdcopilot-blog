@@ -1,44 +1,31 @@
 """Operator commands: ``python -m mdcopilot_blog.cli <command>``.
 
-Commands: migrate, migrate-dbos, seed, sync-prompts, create-admin, create-user.
-Passwords are read from an environment variable, never from the command line.
+Commands: migrate, migrate-dbos, seed, sync-prompts.
 """
 
 import argparse
 import asyncio
 import io
 import logging
-import os
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, redirect_stdout
-from datetime import UTC, datetime
 
 from alembic import command
 from alembic.config import Config
 from dbos import run_dbos_database_migrations
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from mdcopilot_blog.auth.users import (
-    MIN_PASSWORD_LENGTH,
-    UserExists,
-    create_user,
-    get_user_by_email,
-    normalize_email,
-)
 from mdcopilot_blog.db.engine import make_engine, make_sessionmaker
 from mdcopilot_blog.db.seed import SeedReport, seed_defaults
-from mdcopilot_blog.domain.enums import Role
 from mdcopilot_blog.logs import configure_logging
 from mdcopilot_blog.prompts.registry import PromptRegistry, PromptRegistryError, default_prompt_root
-from mdcopilot_blog.services.audit import audit
 from mdcopilot_blog.settings import Settings, get_settings
 from mdcopilot_blog.workflows.dbos_config import DBOS_SYSTEM_SCHEMA
 
 ALEMBIC_INI = "alembic.ini"  # relative to the working directory (/app in every backend container)
 EXIT_OK = 0
 EXIT_FAILED = 1
-EXIT_USAGE = 2
 
 
 @asynccontextmanager
@@ -100,12 +87,8 @@ async def _seed(settings: Settings) -> SeedReport:
 def seed(settings: Settings) -> int:
     report = asyncio.run(_seed(settings))
     print(
-        f"seed: settings_created={report.settings_created} brand_created={report.brand_created} "
-        f"pillars_created={report.pillars_created}"
-    )
-    print(
-        f"seed-catalogue: feeds_created={report.feeds_created} domains_created={report.domains_created} "
-        f"themes_created={report.themes_created} price_overrides_created={report.price_overrides_created}"
+        f"seed: brand_created={report.brand_created} pillars_created={report.pillars_created} "
+        f"domains_created={report.domains_created} price_overrides_created={report.price_overrides_created}"
     )
     return EXIT_OK
 
@@ -136,53 +119,6 @@ def migrate(settings: Settings) -> int:
     return EXIT_OK
 
 
-async def _create_account(
-    settings: Settings, *, email: str, display_name: str, role: Role, password: str
-) -> tuple[bool, str]:
-    """Return (created, stored email). An existing account is never modified."""
-    normalized = normalize_email(email)
-    async with _session(settings) as db:
-        if await get_user_by_email(db, normalized) is not None:
-            return False, normalized
-        try:
-            user = await create_user(db, email=normalized, display_name=display_name, role=role, password=password)
-        except UserExists:
-            await db.rollback()
-            return False, normalized
-        await db.flush()
-        await audit(
-            db,
-            actor_user_id=None,
-            action="user.create",
-            entity_type="user",
-            entity_id=str(user.id),
-            details={"role": role.value, "via": "cli"},
-        )
-        await db.commit()
-        return True, user.email
-
-
-def create_account(settings: Settings, *, email: str, display_name: str, role: Role, password_env: str) -> int:
-    if "@" not in email:
-        print(f"--email must be an email address, got {email!r}", file=sys.stderr)
-        return EXIT_USAGE
-    password = os.environ.get(password_env, "")
-    if not password:
-        print(f"{password_env} is not set; put the password in that environment variable", file=sys.stderr)
-        return EXIT_USAGE
-    if len(password) < MIN_PASSWORD_LENGTH:
-        print(f"the password in {password_env} is empty", file=sys.stderr)
-        return EXIT_USAGE
-    created, stored_email = asyncio.run(
-        _create_account(settings, email=email, display_name=display_name, role=role, password=password)
-    )
-    if created:
-        print(f"created {role.value} {stored_email}")
-    else:
-        print(f"user {stored_email} already exists; nothing changed")
-    return EXIT_OK
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m mdcopilot_blog.cli", description="mdcopilot-blog operator commands"
@@ -190,20 +126,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("migrate", help="alembic upgrade head, then migrate-dbos, seed and sync-prompts")
     sub.add_parser("migrate-dbos", help=f"create or upgrade the DBOS system tables (schema {DBOS_SYSTEM_SCHEMA})")
-    sub.add_parser("seed", help="insert default settings, brand profile and content pillars (idempotent)")
+    sub.add_parser(
+        "seed",
+        help="insert the default brand profile, content pillars, source domains and price overrides (idempotent)",
+    )
     sub.add_parser("sync-prompts", help="register prompt files in blog_prompt_versions")
-    sub.add_parser("purge-snapshots", help="purge expired source snapshots while retaining active research")
-
-    admin = sub.add_parser("create-admin", help="create an admin account; no change if the email exists")
-    admin.add_argument("--email", required=True)
-    admin.add_argument("--display-name", required=True)
-    admin.add_argument("--password-env", default="BOOTSTRAP_ADMIN_PASSWORD", metavar="VAR")
-
-    user = sub.add_parser("create-user", help="create an account with a role; no change if the email exists")
-    user.add_argument("--email", required=True)
-    user.add_argument("--display-name", required=True)
-    user.add_argument("--role", required=True, choices=[role.value for role in Role])
-    user.add_argument("--password-env", required=True, metavar="VAR")
     return parser
 
 
@@ -219,29 +146,7 @@ def main() -> int:
         return migrate_dbos(settings)
     if name == "seed":
         return seed(settings)
-    if name == "sync-prompts":
-        return sync_prompts(settings)
-    if name == "purge-snapshots":
-        from mdcopilot_blog.services.retention import purge_source_snapshots
-
-        async def purge() -> int:
-            engine = make_engine(settings.database_url())
-            try:
-                report = await purge_source_snapshots(
-                    make_sessionmaker(engine), settings=settings, now=datetime.now(UTC)
-                )
-                print(
-                    f"purge-snapshots: purged={report.purged} batches={report.batches} more_remaining={str(report.more_remaining).lower()} cutoff={report.cutoff.isoformat()}"
-                )
-                return EXIT_OK
-            finally:
-                await engine.dispose()
-
-        return asyncio.run(purge())
-    role = Role.ADMIN if name == "create-admin" else Role(args.role)
-    return create_account(
-        settings, email=args.email, display_name=args.display_name, role=role, password_env=args.password_env
-    )
+    return sync_prompts(settings)
 
 
 if __name__ == "__main__":

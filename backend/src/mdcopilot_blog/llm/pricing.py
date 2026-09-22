@@ -247,25 +247,6 @@ async def _genai_or_zero(
     return cost, "genai-prices"
 
 
-async def price_embedding_call(
-    book: DbPriceBook,
-    *,
-    provider: str,
-    model: str,
-    input_tokens: int,
-    at: datetime,
-) -> PricedCall:
-    override = await book.override_for(provider, model, at=at)
-    if override is not None:
-        cost = override_token_cost(override, TokenUsage(input_tokens, 0))
-        if cost is not None:
-            return PricedCall(cost, price_version_for([override.price_version]), "override", (override.price_version,))
-    cost = genai_token_cost(provider, model, TokenUsage(input_tokens, 0), at=at)
-    if cost is not None:
-        return PricedCall(cost, GENAI_PRICES_VERSION, "genai-prices", ())
-    return PricedCall(Decimal("0.000000"), GENAI_PRICES_VERSION, "unpriced", ())
-
-
 _PRICE_UPDATER: object | None = None
 
 

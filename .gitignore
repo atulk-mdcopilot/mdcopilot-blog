@@ -9,10 +9,6 @@ __pycache__/
 .venv/
 .ruff_cache/
 
-# Node / frontend
-node_modules/
-dist/
-
 # OS / editors
 .DS_Store
 .idea/
@@ -21,4 +17,3 @@ dist/
 backups/
 
 .code-review-graph/
-*.tsbuildinfo

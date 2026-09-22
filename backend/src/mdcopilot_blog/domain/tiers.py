@@ -66,16 +66,6 @@ class DomainRule:
 
 
 @dataclass(frozen=True)
-class FeedHint:
-    feed_url: str
-    feed_name: str
-    tier: int
-    source_type: SourceType
-    is_preprint: bool
-    header_profile: HeaderProfile
-
-
-@dataclass(frozen=True)
 class Classification:
     domain: str
     tier: int
@@ -84,7 +74,6 @@ class Classification:
     fetch_policy: FetchPolicy
     is_preprint: bool
     rule_publisher: str | None
-    feed_publisher: str | None
 
 
 def match_domain_rule(host: str, rules: Mapping[str, DomainRule]) -> DomainRule | None:
@@ -95,11 +84,8 @@ def match_domain_rule(host: str, rules: Mapping[str, DomainRule]) -> DomainRule 
     return None
 
 
-def classify_source(url: str, *, rules: Mapping[str, DomainRule], feed: FeedHint | None) -> Classification:
+def classify_source(url: str, *, rules: Mapping[str, DomainRule]) -> Classification:
     domain = urls.registrable_domain(urls.host_of(url))
-    applicable_feed = (
-        feed if feed is not None and urls.registrable_domain(urls.host_of(feed.feed_url)) == domain else None
-    )
     rule = match_domain_rule(urls.host_of(url), rules)
     if rule is not None:
         tier = rule.tier
@@ -107,22 +93,13 @@ def classify_source(url: str, *, rules: Mapping[str, DomainRule], feed: FeedHint
         header_profile = rule.header_profile
         fetch_policy = rule.fetch_policy
         rule_publisher = rule.publisher
-    elif applicable_feed is not None:
-        tier = applicable_feed.tier
-        source_type = applicable_feed.source_type
-        header_profile = applicable_feed.header_profile
-        fetch_policy = "fetch"
-        rule_publisher = None
     else:
         tier = 3
         source_type = SourceType.OTHER
         header_profile = "default"
         fetch_policy = "fetch"
         rule_publisher = None
-    is_preprint = (applicable_feed.is_preprint if applicable_feed is not None else False) or (
-        rule is not None and rule.source_type == SourceType.PREPRINT
-    )
-    feed_publisher = applicable_feed.feed_name if applicable_feed is not None else None
+    is_preprint = rule is not None and rule.source_type == SourceType.PREPRINT
     return Classification(
         domain=domain,
         tier=tier,
@@ -131,7 +108,6 @@ def classify_source(url: str, *, rules: Mapping[str, DomainRule], feed: FeedHint
         fetch_policy=fetch_policy,
         is_preprint=is_preprint,
         rule_publisher=rule_publisher,
-        feed_publisher=feed_publisher,
     )
 
 
@@ -139,11 +115,10 @@ def resolve_publisher(
     *,
     rule_publisher: str | None,
     journal: str | None,
-    feed_publisher: str | None,
     sitename: str | None,
     domain: str,
 ) -> str:
-    for candidate in (journal, rule_publisher, feed_publisher, sitename, domain):
+    for candidate in (journal, rule_publisher, sitename, domain):
         if candidate is not None and candidate.strip():
             return candidate.strip()[:200]
     return domain[:200]

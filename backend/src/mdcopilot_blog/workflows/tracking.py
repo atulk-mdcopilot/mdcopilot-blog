@@ -1,8 +1,8 @@
 """Run, attempt and step bookkeeping shared by every workflow.
 
-- A run (blog_runs) is what the user sees. Every DBOS execution of it (original, fork) is an attempt
+- A run (blog_runs) is what the user sees. Every DBOS execution of it is an attempt
   (blog_run_attempts) keyed by dbos_workflow_id. Recovery re-uses the same workflow id, so it re-uses the attempt.
-- Steps resolve their attempt from DBOS.workflow_id, never from inputs: fork_workflow copies earlier step outputs.
+- Steps resolve their attempt from DBOS.workflow_id, never from inputs.
 - Step rows (blog_agent_runs) are keyed by (dbos_workflow_id, dbos_step_id); a re-executed step bumps `tries`.
 - Every write uses its own short session and commits immediately.
 """
@@ -27,7 +27,6 @@ from mdcopilot_blog.domain.enums import AttemptStatus, CallStatus, RunStatus, St
 from mdcopilot_blog.domain.state_machine import Entity, require_transition
 from mdcopilot_blog.ids import uuid7
 from mdcopilot_blog.llm.gateway import CallContext
-from mdcopilot_blog.workflows.names import HUMAN_ACTION_WORKFLOWS
 
 type SessionMaker = async_sessionmaker[AsyncSession]
 
@@ -75,14 +74,10 @@ async def _attempt_id_for(session: AsyncSession, workflow_id: str) -> uuid.UUID 
     return attempt_id
 
 
-async def ensure_attempt(
-    sm: SessionMaker, *, run_id: uuid.UUID, workflow_id: str, workflow_name: str, respect_run_cancel: bool = True
-) -> uuid.UUID:
+async def ensure_attempt(sm: SessionMaker, *, run_id: uuid.UUID, workflow_id: str, workflow_name: str) -> uuid.UUID:
     """Return the attempt for `workflow_id`, creating it on first use.
 
-    A new attempt of a forked workflow re-opens a finished run (SUCCEEDED/FAILED/CANCELLED -> QUEUED),
-    so the re-executed steps can move it forward again. An original attempt never re-opens a run:
-    for a run cancelled before its workflow started, the attempt is recorded as CANCELLED at once.
+    For a run cancelled before its workflow started, the attempt is recorded as CANCELLED at once.
     """
     async with sm() as session:
         found = await _attempt_id_for(session, workflow_id)
@@ -91,12 +86,8 @@ async def ensure_attempt(
             if attempt is not None and attempt.status == AttemptStatus.ENQUEUED.value:
                 attempt.status = AttemptStatus.RUNNING.value
                 attempt.started_at = _now()
-                attempt.start_step = DBOS.step_id
                 await session.commit()
             return found
-
-    statuses = await DBOS.list_workflows_async(workflow_ids=[workflow_id], load_input=False, load_output=False)
-    forked_from = statuses[0].forked_from if statuses else None
 
     async with sm() as session:
         run = await session.get(BlogRun, run_id, with_for_update=True)
@@ -108,29 +99,18 @@ async def ensure_attempt(
         count = await session.scalar(select(func.count()).select_from(RunAttempt).where(RunAttempt.run_id == run_id))
         now = _now()
         # the API cancelled the run while its workflow was still queued: nothing will ever close this attempt
-        cancelled_before_start = respect_run_cancel and forked_from is None and run.status == RunStatus.CANCELLED
+        cancelled_before_start = run.status == RunStatus.CANCELLED
         attempt = RunAttempt(
             id=uuid7(),
             run_id=run_id,
             dbos_workflow_id=workflow_id,
             workflow_name=workflow_name,
             attempt_no=(count or 0) + 1,
-            forked_from_workflow_id=forked_from,
-            start_step=DBOS.step_id,
             status=(AttemptStatus.CANCELLED if cancelled_before_start else AttemptStatus.RUNNING).value,
             started_at=now,
             finished_at=now if cancelled_before_start else None,
         )
         session.add(attempt)
-        if (
-            forked_from is not None
-            and workflow_name not in HUMAN_ACTION_WORKFLOWS
-            and RunStatus(run.status) in TERMINAL_RUN_STATUSES
-        ):
-            require_transition(Entity.RUN, run.status, RunStatus.QUEUED)
-            run.status = RunStatus.QUEUED.value
-            run.finished_at = None
-            run.error = None
         await session.commit()
         return attempt.id
 
@@ -162,6 +142,10 @@ async def set_run_status(
         if run is None:
             raise LookupError(f"run {run_id} not found")
         if run.status == target:
+            # Same status, new step: keep `stage` current, it is the progress label the Generate page shows.
+            if stage is not None and run.stage != stage:
+                run.stage = stage
+                await session.commit()
             return
         require_transition(Entity.RUN, run.status, target)
         now = _now()

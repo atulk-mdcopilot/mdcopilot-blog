@@ -5,6 +5,7 @@ numbered list ``S1..Sn`` and outputs only markers, which code maps back to ledge
 ``pydantic_ai`` and no ``mdcopilot_blog.db`` import lives in this module.
 """
 
+import json
 import re
 import uuid
 from collections.abc import Sequence
@@ -146,3 +147,8 @@ def render_brand_voice(brand: BrandProfileValues) -> str:
         f"Call-to-action style: {brand.cta}",
     ]
     return "\n".join(lines)
+
+
+def render_avoid_bundle(brand: BrandProfileValues) -> str:
+    """The ``avoid_bundle`` prompt variable: only the prohibited language (no article history is kept)."""
+    return json.dumps({"prohibitedLanguage": list(brand.prohibited_language)}, ensure_ascii=False)
