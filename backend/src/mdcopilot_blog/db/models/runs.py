@@ -26,7 +26,7 @@ class BlogRun(UUIDPk, Timestamps, Base):
     stage: Mapped[str | None] = mapped_column(String(64))
     params: Mapped[dict[str, Any]] = mapped_column(default=dict, server_default=text("'{}'::jsonb"))
     trace_id: Mapped[str] = mapped_column(String(32))
-    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("blog_users.id", ondelete="SET NULL"))
     cost_usd: Mapped[Decimal] = mapped_column(Numeric(12, 6), default=Decimal(0), server_default=text("0"))
     started_at: Mapped[datetime | None]
     finished_at: Mapped[datetime | None]

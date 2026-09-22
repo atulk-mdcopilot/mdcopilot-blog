@@ -1,4 +1,4 @@
-"""Run service: create, list, read and cancel user-visible runs (``app.blog_runs``).
+"""Run service: create, list, read and cancel user-visible runs (``blog_runs``).
 
 The API never executes workflows. It records the run, commits, and only then enqueues the
 workflow through the workflow client (``DBOSClient`` in production), so the worker can always

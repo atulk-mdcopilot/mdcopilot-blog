@@ -39,16 +39,16 @@ async def purge_source_snapshots(
             result = await db.execute(
                 text("""
                 WITH eligible AS (
-                    SELECT s.id FROM app.blog_sources s
+                    SELECT s.id FROM blog_sources s
                     WHERE s.text_snapshot IS NOT NULL AND s.retrieved_at < :cutoff
                     AND NOT EXISTS (
-                        SELECT 1 FROM app.blog_research_packets p JOIN app.blog_articles a ON a.id = p.article_id
+                        SELECT 1 FROM blog_research_packets p JOIN blog_articles a ON a.id = p.article_id
                         WHERE a.status NOT IN ('PUBLISHED', 'REJECTED', 'SUPERSEDED', 'FAILED')
                         AND p.source_ids @> jsonb_build_array(s.id::text)
                     )
                     ORDER BY s.retrieved_at, s.id LIMIT :batch_size FOR UPDATE OF s SKIP LOCKED
                 )
-                UPDATE app.blog_sources s SET text_snapshot = NULL, snapshot_purged_at = :now, updated_at = :now
+                UPDATE blog_sources s SET text_snapshot = NULL, snapshot_purged_at = :now, updated_at = :now
                 FROM eligible e WHERE s.id = e.id RETURNING s.id
             """),
                 {"cutoff": cutoff, "now": now, "batch_size": batch_size},

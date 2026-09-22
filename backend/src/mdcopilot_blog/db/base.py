@@ -1,6 +1,7 @@
 """Declarative base, naming convention and shared column mixins.
 
-Every table lives in the Postgres schema ``app`` (Alembic-managed). DBOS owns schema ``dbos``.
+Every table lives in the shared mdcopilot-backend database, schema ``public``, with a ``blog_`` table-name
+prefix (Alembic-managed, version table ``blog_alembic_versions``). DBOS owns schema ``blog_dbos``.
 """
 
 import uuid
@@ -13,9 +14,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from mdcopilot_blog.ids import uuid7
 
-SCHEMA = "app"
-
-# "ix" uses table_name + column names (not column_0_label, which would prefix the schema: ix_app_...).
+# "ix" uses table_name + column names (not column_0_label, which would prefix a schema if one were set).
 NAMING_CONVENTION = {
     "ix": "ix_%(table_name)s_%(column_0_N_name)s",
     "uq": "uq_%(table_name)s_%(column_0_N_name)s",
@@ -26,7 +25,7 @@ NAMING_CONVENTION = {
 
 
 class Base(DeclarativeBase):
-    metadata = MetaData(schema=SCHEMA, naming_convention=NAMING_CONVENTION)
+    metadata = MetaData(naming_convention=NAMING_CONVENTION)
     type_annotation_map: ClassVar[dict[Any, Any]] = {
         datetime: DateTime(timezone=True),
         dict[str, Any]: JSONB,

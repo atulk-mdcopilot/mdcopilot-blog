@@ -32,5 +32,5 @@ class Publication(UUIDPk, Timestamps, Base):
     as_draft: Mapped[bool] = mapped_column(default=False, server_default=text("false"))
     attempts: Mapped[int] = mapped_column(default=0, server_default=text("0"))
     last_error: Mapped[dict[str, Any] | None]
-    requested_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
-    confirmed_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    requested_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("blog_users.id", ondelete="SET NULL"))
+    confirmed_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("blog_users.id", ondelete="SET NULL"))

@@ -1,1 +1,1 @@
-"""Database layer: declarative base, engine factory, models and seed data (schema ``app``)."""
+"""Database layer: declarative base, engine factory, models and seed data (``blog_`` tables)."""

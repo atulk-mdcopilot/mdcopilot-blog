@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
-from sqlalchemy import URL
+from sqlalchemy import URL, make_url
 
 MIN_SESSION_SECRET_LENGTH = 32
 LOG_LEVELS = frozenset({"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"})
@@ -61,12 +61,8 @@ class Settings(BaseSettings):
     session_cookie_secure: bool = Field(False, validation_alias="SESSION_COOKIE_SECURE")
     public_app_url: str = Field("http://localhost:8310", validation_alias="PUBLIC_APP_URL")
 
-    # --- Database ---
-    postgres_db: str = Field("mdcopilot_blog", validation_alias="POSTGRES_DB")
-    postgres_user: str = Field("mdcopilot_blog", validation_alias="POSTGRES_USER")
-    postgres_password: SecretStr = Field(validation_alias="POSTGRES_PASSWORD")
-    postgres_host: str = Field("db", validation_alias="POSTGRES_HOST")
-    postgres_port: int = Field(5432, ge=1, le=65535, validation_alias="POSTGRES_PORT")
+    # --- Database: the mdcopilot-backend database (same DATABASE_URL format the backend uses) ---
+    database_dsn: SecretStr = Field(validation_alias="DATABASE_URL")
 
     # --- Provider keys ---
     openai_api_key: SecretStr | None = Field(None, validation_alias="OPENAI_API_KEY")
@@ -254,23 +250,16 @@ class Settings(BaseSettings):
             raise ValueError("BLOG_AGENT_WORD_COUNT_MIN must be less than BLOG_AGENT_WORD_COUNT_MAX")
         return self
 
-    def database_url(self, database: str | None = None) -> URL:
-        """SQLAlchemy URL for the app database (or `database`). `str()`/`repr()` of a URL mask the password."""
-        return URL.create(
-            "postgresql+psycopg",
-            username=self.postgres_user,
-            password=self.postgres_password.get_secret_value(),
-            host=self.postgres_host,
-            port=self.postgres_port,
-            database=database or self.postgres_db,
-        )
+    def database_url(self) -> URL:
+        """SQLAlchemy URL (psycopg 3 driver) for DATABASE_URL. `str()`/`repr()` of a URL mask the password."""
+        return make_url(self.database_dsn.get_secret_value()).set(drivername="postgresql+psycopg")
 
     @property
     def dbos_system_database_url(self) -> str:
         """Plain URL string for DBOS (it does not accept a URL object). Contains the password: never log it.
 
         render_as_string percent-encodes "@", ":", "/" and "%", but NOT spaces, and libpq rejects a raw
-        space, so POSTGRES_PASSWORD must not contain spaces. Generated hex passwords are fine.
+        space, so the database password must not contain spaces.
         """
         return self.database_url().render_as_string(hide_password=False)
 

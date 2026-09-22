@@ -19,15 +19,14 @@ The default deployment has four persistent services and one initialization servi
 | `web` | React 19, TypeScript, Vite 8 build; Nginx | Dashboard/editor SPA and same-origin `/api/` proxy |
 | `api` | Python 3.12, FastAPI, Uvicorn | Authentication, reads, edits, approvals, configuration, workflow submission |
 | `worker` | Same Python image; DBOS 3.0.0 | Durable discovery, generation, rechecks, regeneration, publication, maintenance |
-| `db` | PostgreSQL 16 with pgvector | Application records, vectors, sessions, and DBOS execution state |
 | `migrate` | One-shot Python CLI | Alembic migrations, DBOS migrations, default data, prompt registration |
 
 ```mermaid
 flowchart LR
     User[Editorial user] --> Web[React SPA / Nginx]
     Web -->|Same-origin HTTP /api| API[FastAPI]
-    API -->|SQLAlchemy async| AppDB[(PostgreSQL app schema)]
-    API -->|DBOSClient enqueue / control| DBOSDB[(PostgreSQL dbos schema)]
+    API -->|SQLAlchemy async| AppDB[(mdcopilot-backend PostgreSQL blog_* tables)]
+    API -->|DBOSClient enqueue / control| DBOSDB[(mdcopilot-backend PostgreSQL blog_dbos schema)]
     DBOSDB --> Worker[DBOS worker]
     Worker --> AppDB
     Worker --> LLM[OpenAI / Google / optional Anthropic]
@@ -91,7 +90,7 @@ Sources: [step context](../backend/src/mdcopilot_blog/services/step_context.py),
 All application commands run in Docker. From the repository root:
 
 1. Copy `.env.example` to `.env` if the file does not already exist.
-2. Set `POSTGRES_PASSWORD`, `SESSION_SECRET` (at least 32 characters), `BOOTSTRAP_ADMIN_EMAIL`, and a nonempty `BOOTSTRAP_ADMIN_PASSWORD`. `openssl rand -hex 32` can generate the session secret. The DBOS URL path assumes a database password without spaces.
+2. Start the MDCopilot root stack first; its PostgreSQL (pgvector) is the database. Set `SESSION_SECRET` (at least 32 characters), `BOOTSTRAP_ADMIN_EMAIL`, and a nonempty `BOOTSTRAP_ADMIN_PASSWORD`. `openssl rand -hex 32` can generate the session secret. The DBOS URL path assumes a database password without spaces.
 3. Configure OpenAI and Gemini credentials for the default generation path. OpenAI supplies web search; Gemini supplies the configured embeddings. Anthropic is an optional fallback; NCBI credentials are optional.
 4. Start the application and create an account:
 
@@ -102,13 +101,12 @@ All application commands run in Docker. From the repository root:
 
 5. Open `http://localhost:8310` and sign in.
 
-The startup dependency chain is `db healthy → migrate completed → api/worker`; `web` waits for API health. `cli migrate` runs Alembic upgrade, DBOS migrations in schema `dbos`, idempotent seeds, and prompt synchronization. Setting bootstrap environment values alone does not create a user. Repeating account creation for an existing email leaves that account unchanged.
+The startup dependency chain is `root stack postgres (external) → migrate completed → api/worker`; `web` waits for API health. `cli migrate` runs Alembic upgrade, DBOS migrations in schema `blog_dbos`, idempotent seeds, and prompt synchronization. Setting bootstrap environment values alone does not create a user. Repeating account creation for an existing email leaves that account unchanged.
 
 | Access/probe | Default |
 | --- | --- |
 | Web UI | `127.0.0.1:8310` → Nginx `8080` |
 | Direct API | `127.0.0.1:8300` → Uvicorn `8000` |
-| PostgreSQL | `127.0.0.1:5440` → database `5432` |
 | API liveness | Direct API `/healthz` |
 | API readiness | Direct API `/readyz`, checks `select 1` |
 | API schema/docs | Direct API `/openapi.json`, `/docs`, `/redoc` in development only |
@@ -182,11 +180,11 @@ Sources: [auth dependencies](../backend/src/mdcopilot_blog/api/deps.py), [RBAC](
 
 ## 6. Persistence and data ownership
 
-The single PostgreSQL database contains Alembic-owned schema `app` and DBOS-owned schema `dbos`. Most application primary keys are UUIDv7. Datetimes use timezone-aware columns; structured contracts, configurations, and evidence payloads use JSONB alongside relational keys and indexed scalar fields.
+The blog has no database of its own. It uses the mdcopilot-backend PostgreSQL database (shared with the backend and Drive): Alembic-owned `blog_*` tables in schema `public`, with history in `blog_alembic_versions` (the backend keeps `alembic_version`, Drive `drive_alembic_version`), and DBOS-owned schema `blog_dbos`. Most application primary keys are UUIDv7. Datetimes use timezone-aware columns; structured contracts, configurations, and evidence payloads use JSONB alongside relational keys and indexed scalar fields.
 
-| Tables in `app` | What they own |
+| `blog_*` tables | What they own |
 | --- | --- |
-| `users`, `user_sessions`, `login_attempts`, `audit_log` | Identity, sessions, throttling, audit history |
+| `blog_users`, `blog_user_sessions`, `blog_login_attempts`, `blog_audit_log` | Identity, sessions, throttling, audit history |
 | `blog_settings`, `blog_brand_profiles`, `blog_content_pillars` | Versioned effective settings/brand and weekday content rotation |
 | `blog_prompt_versions`, `blog_price_overrides` | Immutable prompt registration and effective-dated pricing overrides |
 | `blog_runs`, `blog_run_attempts`, `blog_agent_runs` | User-visible run, individual DBOS execution/fork, tracked stage and costs |
@@ -229,7 +227,7 @@ Unique/partial indexes enforce one daily run per local date, one active settings
 
 pgvector columns are fixed at **1536 dimensions**, used for topic/argument novelty, external post matching, and article/opening/argument representations. Changing the environment dimension alone does not change the schema or service validation. Keyword/phrase/headline comparisons also use deterministic text operations; not every similarity calculation is a vector query.
 
-The named `blog_pgdata` volume holds durable data. Text snapshots and export metadata are database values; there is no configured object store or upload storage service. Downloads are generated from API responses in the browser. Source snapshots can be purged independently while source identity/metadata survives.
+Durable data lives in the mdcopilot-backend database (the root stack `postgres_data` volume). Text snapshots and export metadata are database values; there is no configured object store or upload storage service. Downloads are generated from API responses in the browser. Source snapshots can be purged independently while source identity/metadata survives.
 
 Sources: [model package](../backend/src/mdcopilot_blog/db/models/__init__.py), [schema base](../backend/src/mdcopilot_blog/db/base.py), [version persistence](../backend/src/mdcopilot_blog/services/versions.py), [source retention](../backend/src/mdcopilot_blog/services/retention.py).
 
@@ -247,13 +245,13 @@ Settings saves carry `expectedVersion`, use a configuration advisory lock, creat
 
 | Variables | Defaults / effect |
 | --- | --- |
-| `SESSION_SECRET`, `POSTGRES_PASSWORD` | Required; secret length ≥32; DB password used for app and DBOS connections |
+| `SESSION_SECRET` | Required; secret length ≥32 |
+| `DATABASE_URL` | Required; set by `docker-compose.yml` to the mdcopilot-backend database; used for app and DBOS connections |
 | `BOOTSTRAP_ADMIN_EMAIL`, `BOOTSTRAP_ADMIN_PASSWORD` | Read by the explicit account bootstrap command, not automatic account creation |
 | `APP_ENV`, `APP_VERSION`, `LOG_LEVEL` | `development`, `0.1.0`, `INFO`; version also controls DBOS execution compatibility |
 | `PUBLIC_APP_URL`, `SESSION_COOKIE_SECURE` | `http://localhost:8310`, `false` |
 | `PUBLIC_PROXY_SCHEME` | Nginx/Compose control, `http`; set `https` behind the intended HTTPS endpoint |
-| `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_HOST`, `POSTGRES_PORT` | `mdcopilot_blog`, `mdcopilot_blog`, `db`, `5432`; Compose forces backend host `db` |
-| `DB_HOST_PORT`, `API_HOST_PORT`, `WEB_HOST_PORT` | Compose host bindings: `5440`, `8300`, `8310` |
+| `API_HOST_PORT`, `WEB_HOST_PORT` | Compose host bindings: `8300`, `8310` |
 | `OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY` | Optional at boot; availability affects usable generation routes |
 | `NCBI_API_KEY`, `NCBI_CONTACT_EMAIL` | Optional PubMed credentials/contact |
 | `BLOG_AGENT_ENABLED` | `true`; false rejects new agent actions and leaves worker idle |

@@ -7,11 +7,14 @@ then export or publish an approved version to a configured MDCopilot website.
 
 All commands run in Docker. The only Compose file is `docker-compose.yml`.
 
-1. Copy `.env.example` to `.env`. Set `POSTGRES_PASSWORD`, a `SESSION_SECRET` of
+1. Start the MDCopilot root stack first (`docker compose up -d` in the workspace root).
+   The blog has no database of its own: it uses the mdcopilot-backend Postgres
+   (`DATABASE_URL` in `docker-compose.yml`) over the `mdcopilot_mdcopilot-network` network.
+2. Copy `.env.example` to `.env`. Set a `SESSION_SECRET` of
    at least 32 characters (`openssl rand -hex 32`), and administrator credentials.
-2. Configure `OPENAI_API_KEY` and `GEMINI_API_KEY` for generation. Anthropic and
+3. Configure `OPENAI_API_KEY` and `GEMINI_API_KEY` for generation. Anthropic and
    PubMed keys are optional. Missing provider keys do not prevent editing existing drafts.
-3. Build and start:
+4. Build and start:
 
    ```sh
    docker compose up -d --build --wait
@@ -19,8 +22,9 @@ All commands run in Docker. The only Compose file is `docker-compose.yml`.
    ```
 
 Open http://localhost:8310 and sign in. Migrations, default configuration and
-versioned prompts are loaded before the API and worker start. Existing data stays
-in the `mdcopilot-blog_blog_pgdata` volume.
+versioned prompts are loaded before the API and worker start. Data lives in the
+mdcopilot-backend database: `blog_*` tables, Alembic history in `blog_alembic_versions`
+(separate from the backend `alembic_version`), and DBOS state in schema `blog_dbos`.
 
 The Generate page accepts a specific topic; the dashboard can discover one.
 Research leads to a draft with citations, fact checking, editorial review and SEO.
@@ -45,7 +49,7 @@ environment content defaults. Provider keys and publishing switches stay in `.en
 
 For HTTPS deployment, configure a reverse proxy and set `APP_ENV=production`,
 `PUBLIC_APP_URL`, `PUBLIC_PROXY_SCHEME=https` and `SESSION_COOKIE_SECURE=true`.
-Host ports bind to localhost. Keep the same database volume when deploying updates.
+Host ports bind to localhost. The database is the mdcopilot-backend database.
 
 ## Code layout
 
@@ -81,13 +85,12 @@ proxies the API. Spending records remain because generation uses them to enforce
 ```sh
 docker compose build
 docker compose logs --tail=100 api worker
-./scripts/ops/backup.sh
 docker compose stop
 ```
 
-Backups are local database archives and are not source files. Migration history is
-preserved for existing installations, including historical calendar/notification
-tables that the application no longer uses. Removing those tables can be handled
+Back up the mdcopilot-backend database; the blog has no separate database. The migration
+history still creates the historical `blog_calendar_slots`/`blog_notifications` tables that the
+application no longer uses. Removing those tables can be handled
 later through an explicit data migration.
 
 Changing workflow step order requires a new `APP_VERSION`; interrupted jobs from

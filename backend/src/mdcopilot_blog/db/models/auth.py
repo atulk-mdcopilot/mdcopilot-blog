@@ -11,7 +11,7 @@ from mdcopilot_blog.db.base import Base, CreatedAt, Timestamps, UUIDPk
 
 
 class User(UUIDPk, Timestamps, Base):
-    __tablename__ = "users"
+    __tablename__ = "blog_users"
     __table_args__ = (CheckConstraint("email = lower(email)", name="email_lowercase"),)
 
     email: Mapped[str] = mapped_column(String(320), unique=True)
@@ -25,9 +25,9 @@ class User(UUIDPk, Timestamps, Base):
 class UserSession(UUIDPk, CreatedAt, Base):
     """A login session. Only the sha256 of the opaque token is stored."""
 
-    __tablename__ = "user_sessions"
+    __tablename__ = "blog_user_sessions"
 
-    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("blog_users.id", ondelete="CASCADE"), index=True)
     token_hash: Mapped[str] = mapped_column(String(64), unique=True)
     last_seen_at: Mapped[datetime]
     expires_at: Mapped[datetime]
@@ -37,8 +37,8 @@ class UserSession(UUIDPk, CreatedAt, Base):
 
 
 class LoginAttempt(UUIDPk, CreatedAt, Base):
-    __tablename__ = "login_attempts"
-    __table_args__ = (Index("ix_login_attempts_created_at", "created_at"),)
+    __tablename__ = "blog_login_attempts"
+    __table_args__ = (Index("ix_blog_login_attempts_created_at", "created_at"),)
 
     email: Mapped[str] = mapped_column(String(320), index=True)
     ip: Mapped[str | None] = mapped_column(String(64), index=True)
@@ -46,10 +46,10 @@ class LoginAttempt(UUIDPk, CreatedAt, Base):
 
 
 class AuditLog(UUIDPk, CreatedAt, Base):
-    __tablename__ = "audit_log"
-    __table_args__ = (Index("ix_audit_log_created_at", "created_at"),)
+    __tablename__ = "blog_audit_log"
+    __table_args__ = (Index("ix_blog_audit_log_created_at", "created_at"),)
 
-    actor_user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    actor_user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("blog_users.id", ondelete="SET NULL"))
     action: Mapped[str] = mapped_column(String(64), index=True)
     entity_type: Mapped[str] = mapped_column(String(64))
     entity_id: Mapped[str | None] = mapped_column(String(64))

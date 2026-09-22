@@ -61,9 +61,9 @@ class TopicCandidateRecord(UUIDPk, Timestamps, Base):
     argument_embedding: Mapped[list[float] | None] = mapped_column(Vector(VECTOR_DIMENSIONS))
     status: Mapped[str] = mapped_column(String(16), default="PROPOSED", server_default=text("'PROPOSED'"), index=True)
     is_manual: Mapped[bool] = mapped_column(default=False, server_default=text("false"))
-    edited_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    edited_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("blog_users.id", ondelete="SET NULL"))
     edited_at: Mapped[datetime | None]
-    selected_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    selected_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("blog_users.id", ondelete="SET NULL"))
     selected_at: Mapped[datetime | None]
     rejected_reason: Mapped[str | None] = mapped_column(Text)
     dbos_workflow_id: Mapped[str | None] = mapped_column(String(128))

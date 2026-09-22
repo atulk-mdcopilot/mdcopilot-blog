@@ -4,6 +4,11 @@ Revision ID: 0001
 Revises:
 Create Date: 2026-09-17 00:00:00
 
+Rewritten in place 2026-09-22 for the shared mdcopilot-backend database: schema public (was "app"), the four
+unprefixed tables renamed users -> blog_users, user_sessions -> blog_user_sessions, login_attempts ->
+blog_login_attempts, audit_log -> blog_audit_log (constraint and index names follow), history tracked in
+blog_alembic_versions. Columns, types, keys, indexes, defaults and the revision chain are otherwise unchanged.
+
 """
 
 from collections.abc import Sequence
@@ -42,7 +47,6 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_blog_content_pillars")),
         sa.UniqueConstraint("key", name=op.f("uq_blog_content_pillars_key")),
-        schema="app",
     )
     op.create_table(
         "blog_prompt_versions",
@@ -61,23 +65,21 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_blog_prompt_versions")),
         sa.UniqueConstraint("name", "version", name="uq_blog_prompt_versions_name_version"),
-        schema="app",
     )
     op.create_table(
-        "login_attempts",
+        "blog_login_attempts",
         sa.Column("id", sa.Uuid(), nullable=False),
         sa.Column("email", sa.String(length=320), nullable=False),
         sa.Column("ip", sa.String(length=64), nullable=True),
         sa.Column("succeeded", sa.Boolean(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.PrimaryKeyConstraint("id", name=op.f("pk_login_attempts")),
-        schema="app",
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_blog_login_attempts")),
     )
-    op.create_index("ix_login_attempts_created_at", "login_attempts", ["created_at"], unique=False, schema="app")
-    op.create_index(op.f("ix_login_attempts_email"), "login_attempts", ["email"], unique=False, schema="app")
-    op.create_index(op.f("ix_login_attempts_ip"), "login_attempts", ["ip"], unique=False, schema="app")
+    op.create_index("ix_blog_login_attempts_created_at", "blog_login_attempts", ["created_at"], unique=False)
+    op.create_index(op.f("ix_blog_login_attempts_email"), "blog_login_attempts", ["email"], unique=False)
+    op.create_index(op.f("ix_blog_login_attempts_ip"), "blog_login_attempts", ["ip"], unique=False)
     op.create_table(
-        "users",
+        "blog_users",
         sa.Column("id", sa.Uuid(), nullable=False),
         sa.Column("email", sa.String(length=320), nullable=False),
         sa.Column("display_name", sa.String(length=200), nullable=False),
@@ -87,13 +89,12 @@ def upgrade() -> None:
         sa.Column("last_login_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.CheckConstraint("email = lower(email)", name=op.f("ck_users_email_lowercase")),
-        sa.PrimaryKeyConstraint("id", name=op.f("pk_users")),
-        sa.UniqueConstraint("email", name=op.f("uq_users_email")),
-        schema="app",
+        sa.CheckConstraint("email = lower(email)", name=op.f("ck_blog_users_email_lowercase")),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_blog_users")),
+        sa.UniqueConstraint("email", name=op.f("uq_blog_users_email")),
     )
     op.create_table(
-        "audit_log",
+        "blog_audit_log",
         sa.Column("id", sa.Uuid(), nullable=False),
         sa.Column("actor_user_id", sa.Uuid(), nullable=True),
         sa.Column("action", sa.String(length=64), nullable=False),
@@ -105,13 +106,15 @@ def upgrade() -> None:
         ),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.ForeignKeyConstraint(
-            ["actor_user_id"], ["app.users.id"], name=op.f("fk_audit_log_actor_user_id_users"), ondelete="SET NULL"
+            ["actor_user_id"],
+            ["blog_users.id"],
+            name=op.f("fk_blog_audit_log_actor_user_id_blog_users"),
+            ondelete="SET NULL",
         ),
-        sa.PrimaryKeyConstraint("id", name=op.f("pk_audit_log")),
-        schema="app",
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_blog_audit_log")),
     )
-    op.create_index(op.f("ix_audit_log_action"), "audit_log", ["action"], unique=False, schema="app")
-    op.create_index("ix_audit_log_created_at", "audit_log", ["created_at"], unique=False, schema="app")
+    op.create_index(op.f("ix_blog_audit_log_action"), "blog_audit_log", ["action"], unique=False)
+    op.create_index("ix_blog_audit_log_created_at", "blog_audit_log", ["created_at"], unique=False)
     op.create_table(
         "blog_brand_profiles",
         sa.Column("id", sa.Uuid(), nullable=False),
@@ -121,18 +124,19 @@ def upgrade() -> None:
         sa.Column("created_by", sa.Uuid(), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.ForeignKeyConstraint(
-            ["created_by"], ["app.users.id"], name=op.f("fk_blog_brand_profiles_created_by_users"), ondelete="SET NULL"
+            ["created_by"],
+            ["blog_users.id"],
+            name=op.f("fk_blog_brand_profiles_created_by_blog_users"),
+            ondelete="SET NULL",
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_blog_brand_profiles")),
         sa.UniqueConstraint("version", name=op.f("uq_blog_brand_profiles_version")),
-        schema="app",
     )
     op.create_index(
         "uq_blog_brand_profiles_active",
         "blog_brand_profiles",
         ["is_active"],
         unique=True,
-        schema="app",
         postgresql_where=sa.text("is_active"),
     )
     op.create_table(
@@ -146,14 +150,11 @@ def upgrade() -> None:
         sa.Column("read_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.ForeignKeyConstraint(
-            ["user_id"], ["app.users.id"], name=op.f("fk_blog_notifications_user_id_users"), ondelete="CASCADE"
+            ["user_id"], ["blog_users.id"], name=op.f("fk_blog_notifications_user_id_blog_users"), ondelete="CASCADE"
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_blog_notifications")),
-        schema="app",
     )
-    op.create_index(
-        op.f("ix_blog_notifications_user_id"), "blog_notifications", ["user_id"], unique=False, schema="app"
-    )
+    op.create_index(op.f("ix_blog_notifications_user_id"), "blog_notifications", ["user_id"], unique=False)
     op.create_table(
         "blog_runs",
         sa.Column("id", sa.Uuid(), nullable=False),
@@ -173,20 +174,18 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.ForeignKeyConstraint(
-            ["created_by"], ["app.users.id"], name=op.f("fk_blog_runs_created_by_users"), ondelete="SET NULL"
+            ["created_by"], ["blog_users.id"], name=op.f("fk_blog_runs_created_by_blog_users"), ondelete="SET NULL"
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_blog_runs")),
-        schema="app",
     )
-    op.create_index("ix_blog_runs_created_at", "blog_runs", ["created_at"], unique=False, schema="app")
-    op.create_index(op.f("ix_blog_runs_run_date"), "blog_runs", ["run_date"], unique=False, schema="app")
-    op.create_index(op.f("ix_blog_runs_status"), "blog_runs", ["status"], unique=False, schema="app")
+    op.create_index("ix_blog_runs_created_at", "blog_runs", ["created_at"], unique=False)
+    op.create_index(op.f("ix_blog_runs_run_date"), "blog_runs", ["run_date"], unique=False)
+    op.create_index(op.f("ix_blog_runs_status"), "blog_runs", ["status"], unique=False)
     op.create_index(
         "uq_blog_runs_daily_date",
         "blog_runs",
         ["run_date"],
         unique=True,
-        schema="app",
         postgresql_where=sa.text("kind = 'daily'"),
     )
     op.create_table(
@@ -198,22 +197,20 @@ def upgrade() -> None:
         sa.Column("created_by", sa.Uuid(), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.ForeignKeyConstraint(
-            ["created_by"], ["app.users.id"], name=op.f("fk_blog_settings_created_by_users"), ondelete="SET NULL"
+            ["created_by"], ["blog_users.id"], name=op.f("fk_blog_settings_created_by_blog_users"), ondelete="SET NULL"
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_blog_settings")),
         sa.UniqueConstraint("version", name=op.f("uq_blog_settings_version")),
-        schema="app",
     )
     op.create_index(
         "uq_blog_settings_active",
         "blog_settings",
         ["is_active"],
         unique=True,
-        schema="app",
         postgresql_where=sa.text("is_active"),
     )
     op.create_table(
-        "user_sessions",
+        "blog_user_sessions",
         sa.Column("id", sa.Uuid(), nullable=False),
         sa.Column("user_id", sa.Uuid(), nullable=False),
         sa.Column("token_hash", sa.String(length=64), nullable=False),
@@ -224,13 +221,12 @@ def upgrade() -> None:
         sa.Column("user_agent", sa.String(length=400), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.ForeignKeyConstraint(
-            ["user_id"], ["app.users.id"], name=op.f("fk_user_sessions_user_id_users"), ondelete="CASCADE"
+            ["user_id"], ["blog_users.id"], name=op.f("fk_blog_user_sessions_user_id_blog_users"), ondelete="CASCADE"
         ),
-        sa.PrimaryKeyConstraint("id", name=op.f("pk_user_sessions")),
-        sa.UniqueConstraint("token_hash", name=op.f("uq_user_sessions_token_hash")),
-        schema="app",
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_blog_user_sessions")),
+        sa.UniqueConstraint("token_hash", name=op.f("uq_blog_user_sessions_token_hash")),
     )
-    op.create_index(op.f("ix_user_sessions_user_id"), "user_sessions", ["user_id"], unique=False, schema="app")
+    op.create_index(op.f("ix_blog_user_sessions_user_id"), "blog_user_sessions", ["user_id"], unique=False)
     op.create_table(
         "blog_llm_calls",
         sa.Column("id", sa.Uuid(), nullable=False),
@@ -273,20 +269,18 @@ def upgrade() -> None:
         sa.Column("trace_id", sa.String(length=32), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.ForeignKeyConstraint(
-            ["run_id"], ["app.blog_runs.id"], name=op.f("fk_blog_llm_calls_run_id_blog_runs"), ondelete="SET NULL"
+            ["run_id"], ["blog_runs.id"], name=op.f("fk_blog_llm_calls_run_id_blog_runs"), ondelete="SET NULL"
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_blog_llm_calls")),
-        schema="app",
     )
-    op.create_index("ix_blog_llm_calls_created_at", "blog_llm_calls", ["created_at"], unique=False, schema="app")
+    op.create_index("ix_blog_llm_calls_created_at", "blog_llm_calls", ["created_at"], unique=False)
     op.create_index(
         "ix_blog_llm_calls_provider_model",
         "blog_llm_calls",
         ["provider_requested", "model_requested"],
         unique=False,
-        schema="app",
     )
-    op.create_index(op.f("ix_blog_llm_calls_run_id"), "blog_llm_calls", ["run_id"], unique=False, schema="app")
+    op.create_index(op.f("ix_blog_llm_calls_run_id"), "blog_llm_calls", ["run_id"], unique=False)
     op.create_table(
         "blog_run_attempts",
         sa.Column("id", sa.Uuid(), nullable=False),
@@ -302,13 +296,12 @@ def upgrade() -> None:
         sa.Column("error", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.ForeignKeyConstraint(
-            ["run_id"], ["app.blog_runs.id"], name=op.f("fk_blog_run_attempts_run_id_blog_runs"), ondelete="CASCADE"
+            ["run_id"], ["blog_runs.id"], name=op.f("fk_blog_run_attempts_run_id_blog_runs"), ondelete="CASCADE"
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_blog_run_attempts")),
         sa.UniqueConstraint("dbos_workflow_id", name=op.f("uq_blog_run_attempts_dbos_workflow_id")),
-        schema="app",
     )
-    op.create_index(op.f("ix_blog_run_attempts_run_id"), "blog_run_attempts", ["run_id"], unique=False, schema="app")
+    op.create_index(op.f("ix_blog_run_attempts_run_id"), "blog_run_attempts", ["run_id"], unique=False)
     op.create_table(
         "blog_agent_runs",
         sa.Column("id", sa.Uuid(), nullable=False),
@@ -341,67 +334,61 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.ForeignKeyConstraint(
             ["attempt_id"],
-            ["app.blog_run_attempts.id"],
+            ["blog_run_attempts.id"],
             name=op.f("fk_blog_agent_runs_attempt_id_blog_run_attempts"),
             ondelete="CASCADE",
         ),
         sa.ForeignKeyConstraint(
-            ["run_id"], ["app.blog_runs.id"], name=op.f("fk_blog_agent_runs_run_id_blog_runs"), ondelete="CASCADE"
+            ["run_id"], ["blog_runs.id"], name=op.f("fk_blog_agent_runs_run_id_blog_runs"), ondelete="CASCADE"
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_blog_agent_runs")),
         sa.UniqueConstraint("dbos_workflow_id", "dbos_step_id", name="uq_blog_agent_runs_wf_step"),
-        schema="app",
     )
-    op.create_index("ix_blog_agent_runs_created_at", "blog_agent_runs", ["created_at"], unique=False, schema="app")
-    op.create_index(op.f("ix_blog_agent_runs_run_id"), "blog_agent_runs", ["run_id"], unique=False, schema="app")
-    op.create_index(op.f("ix_blog_agent_runs_status"), "blog_agent_runs", ["status"], unique=False, schema="app")
+    op.create_index("ix_blog_agent_runs_created_at", "blog_agent_runs", ["created_at"], unique=False)
+    op.create_index(op.f("ix_blog_agent_runs_run_id"), "blog_agent_runs", ["run_id"], unique=False)
+    op.create_index(op.f("ix_blog_agent_runs_status"), "blog_agent_runs", ["status"], unique=False)
     # ### end Alembic commands ###
 
 
 def downgrade() -> None:
     """Downgrade schema."""
     # ### commands auto generated by Alembic - please adjust! ###
-    op.drop_index(op.f("ix_blog_agent_runs_status"), table_name="blog_agent_runs", schema="app")
-    op.drop_index(op.f("ix_blog_agent_runs_run_id"), table_name="blog_agent_runs", schema="app")
-    op.drop_index("ix_blog_agent_runs_created_at", table_name="blog_agent_runs", schema="app")
-    op.drop_table("blog_agent_runs", schema="app")
-    op.drop_index(op.f("ix_blog_run_attempts_run_id"), table_name="blog_run_attempts", schema="app")
-    op.drop_table("blog_run_attempts", schema="app")
-    op.drop_index(op.f("ix_blog_llm_calls_run_id"), table_name="blog_llm_calls", schema="app")
-    op.drop_index("ix_blog_llm_calls_provider_model", table_name="blog_llm_calls", schema="app")
-    op.drop_index("ix_blog_llm_calls_created_at", table_name="blog_llm_calls", schema="app")
-    op.drop_table("blog_llm_calls", schema="app")
-    op.drop_index(op.f("ix_user_sessions_user_id"), table_name="user_sessions", schema="app")
-    op.drop_table("user_sessions", schema="app")
-    op.drop_index(
-        "uq_blog_settings_active", table_name="blog_settings", schema="app", postgresql_where=sa.text("is_active")
-    )
-    op.drop_table("blog_settings", schema="app")
-    op.drop_index(
-        "uq_blog_runs_daily_date", table_name="blog_runs", schema="app", postgresql_where=sa.text("kind = 'daily'")
-    )
-    op.drop_index(op.f("ix_blog_runs_status"), table_name="blog_runs", schema="app")
-    op.drop_index(op.f("ix_blog_runs_run_date"), table_name="blog_runs", schema="app")
-    op.drop_index("ix_blog_runs_created_at", table_name="blog_runs", schema="app")
-    op.drop_table("blog_runs", schema="app")
-    op.drop_index(op.f("ix_blog_notifications_user_id"), table_name="blog_notifications", schema="app")
-    op.drop_table("blog_notifications", schema="app")
+    op.drop_index(op.f("ix_blog_agent_runs_status"), table_name="blog_agent_runs")
+    op.drop_index(op.f("ix_blog_agent_runs_run_id"), table_name="blog_agent_runs")
+    op.drop_index("ix_blog_agent_runs_created_at", table_name="blog_agent_runs")
+    op.drop_table("blog_agent_runs")
+    op.drop_index(op.f("ix_blog_run_attempts_run_id"), table_name="blog_run_attempts")
+    op.drop_table("blog_run_attempts")
+    op.drop_index(op.f("ix_blog_llm_calls_run_id"), table_name="blog_llm_calls")
+    op.drop_index("ix_blog_llm_calls_provider_model", table_name="blog_llm_calls")
+    op.drop_index("ix_blog_llm_calls_created_at", table_name="blog_llm_calls")
+    op.drop_table("blog_llm_calls")
+    op.drop_index(op.f("ix_blog_user_sessions_user_id"), table_name="blog_user_sessions")
+    op.drop_table("blog_user_sessions")
+    op.drop_index("uq_blog_settings_active", table_name="blog_settings", postgresql_where=sa.text("is_active"))
+    op.drop_table("blog_settings")
+    op.drop_index("uq_blog_runs_daily_date", table_name="blog_runs", postgresql_where=sa.text("kind = 'daily'"))
+    op.drop_index(op.f("ix_blog_runs_status"), table_name="blog_runs")
+    op.drop_index(op.f("ix_blog_runs_run_date"), table_name="blog_runs")
+    op.drop_index("ix_blog_runs_created_at", table_name="blog_runs")
+    op.drop_table("blog_runs")
+    op.drop_index(op.f("ix_blog_notifications_user_id"), table_name="blog_notifications")
+    op.drop_table("blog_notifications")
     op.drop_index(
         "uq_blog_brand_profiles_active",
         table_name="blog_brand_profiles",
-        schema="app",
         postgresql_where=sa.text("is_active"),
     )
-    op.drop_table("blog_brand_profiles", schema="app")
-    op.drop_index("ix_audit_log_created_at", table_name="audit_log", schema="app")
-    op.drop_index(op.f("ix_audit_log_action"), table_name="audit_log", schema="app")
-    op.drop_table("audit_log", schema="app")
-    op.drop_table("users", schema="app")
-    op.drop_index(op.f("ix_login_attempts_ip"), table_name="login_attempts", schema="app")
-    op.drop_index(op.f("ix_login_attempts_email"), table_name="login_attempts", schema="app")
-    op.drop_index("ix_login_attempts_created_at", table_name="login_attempts", schema="app")
-    op.drop_table("login_attempts", schema="app")
-    op.drop_table("blog_prompt_versions", schema="app")
-    op.drop_table("blog_content_pillars", schema="app")
+    op.drop_table("blog_brand_profiles")
+    op.drop_index("ix_blog_audit_log_created_at", table_name="blog_audit_log")
+    op.drop_index(op.f("ix_blog_audit_log_action"), table_name="blog_audit_log")
+    op.drop_table("blog_audit_log")
+    op.drop_table("blog_users")
+    op.drop_index(op.f("ix_blog_login_attempts_ip"), table_name="blog_login_attempts")
+    op.drop_index(op.f("ix_blog_login_attempts_email"), table_name="blog_login_attempts")
+    op.drop_index("ix_blog_login_attempts_created_at", table_name="blog_login_attempts")
+    op.drop_table("blog_login_attempts")
+    op.drop_table("blog_prompt_versions")
+    op.drop_table("blog_content_pillars")
     # ### end Alembic commands ###
     # manual: the vector extension is left installed (it may be shared, and IF NOT EXISTS makes re-upgrade safe).

@@ -19,7 +19,7 @@ class BlogSetting(UUIDPk, CreatedAt, Base):
     version: Mapped[int] = mapped_column(unique=True)
     values: Mapped[dict[str, Any]]
     is_active: Mapped[bool] = mapped_column(default=False, server_default=text("false"))
-    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("blog_users.id", ondelete="SET NULL"))
 
 
 class BrandProfile(UUIDPk, CreatedAt, Base):
@@ -33,7 +33,7 @@ class BrandProfile(UUIDPk, CreatedAt, Base):
     version: Mapped[int] = mapped_column(unique=True)
     profile: Mapped[dict[str, Any]]
     is_active: Mapped[bool] = mapped_column(default=False, server_default=text("false"))
-    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("blog_users.id", ondelete="SET NULL"))
 
 
 class ContentPillar(UUIDPk, Timestamps, Base):

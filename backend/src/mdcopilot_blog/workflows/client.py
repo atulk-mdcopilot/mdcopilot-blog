@@ -10,7 +10,7 @@ from dbos import DBOSClient, EnqueueOptions, WorkflowHandleAsync
 if TYPE_CHECKING:
     from mdcopilot_blog.settings import Settings
 
-DBOS_SYSTEM_SCHEMA = "dbos"
+DBOS_SYSTEM_SCHEMA = "blog_dbos"  # blog_ namespace in the shared mdcopilot-backend database
 DBOS_APPLICATION_NAME = "mdcopilot-blog"
 
 

@@ -54,15 +54,15 @@ class Article(UUIDPk, Timestamps, Base):
     published_version_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("blog_article_versions.id", ondelete="SET NULL", use_alter=True)
     )
-    approved_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    approved_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("blog_users.id", ondelete="SET NULL"))
     approved_at: Mapped[datetime | None]
     approval_mode: Mapped[str | None] = mapped_column(String(16))
     approval_override_reason: Mapped[str | None] = mapped_column(Text)
-    rejected_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    rejected_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("blog_users.id", ondelete="SET NULL"))
     rejected_at: Mapped[datetime | None]
     rejection_reason: Mapped[str | None] = mapped_column(Text)
     scheduled_for: Mapped[datetime | None] = mapped_column(index=True)
-    scheduled_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    scheduled_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("blog_users.id", ondelete="SET NULL"))
     published_at: Mapped[datetime | None] = mapped_column(index=True)
     published_url: Mapped[str | None] = mapped_column(Text)
     superseded_by_article_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -91,7 +91,7 @@ class ResearchPacketRecord(UUIDPk, CreatedAt, Base):
     packet: Mapped[dict[str, Any]]
     summary: Mapped[str] = mapped_column(Text)
     source_ids: Mapped[list[str]] = mapped_column(JSONB, default=list, server_default=text("'[]'::jsonb"))
-    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("blog_users.id", ondelete="SET NULL"))
     dbos_workflow_id: Mapped[str | None] = mapped_column(String(128))
     dbos_step_id: Mapped[int | None]
 
@@ -126,7 +126,7 @@ class ArticleVersion(UUIDPk, CreatedAt, Base):
     citation_markers: Mapped[list[str]] = mapped_column(JSONB, default=list, server_default=text("'[]'::jsonb"))
     resolutions: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list, server_default=text("'[]'::jsonb"))
     research_packet_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("blog_research_packets.id"))
-    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))
+    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("blog_users.id"))
     created_by_kind: Mapped[str] = mapped_column(String(16))
     dbos_workflow_id: Mapped[str | None] = mapped_column(String(128))
     dbos_step_id: Mapped[int | None]
@@ -152,7 +152,7 @@ class VersionSeo(UUIDPk, CreatedAt, Base):
     seo: Mapped[dict[str, Any]]
     social: Mapped[dict[str, Any] | None]
     slug: Mapped[str] = mapped_column(String(200))
-    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("blog_users.id", ondelete="SET NULL"))
     dbos_workflow_id: Mapped[str | None] = mapped_column(String(128))
     dbos_step_id: Mapped[int | None]
 

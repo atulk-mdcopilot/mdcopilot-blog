@@ -31,4 +31,4 @@ class PriceOverride(UUIDPk, CreatedAt, Base):
     effective_from: Mapped[datetime]
     price_version: Mapped[str] = mapped_column(String(64))
     note: Mapped[str | None] = mapped_column(Text)
-    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("blog_users.id", ondelete="SET NULL"))

@@ -10,7 +10,7 @@ Evidence: [production caller](../backend/src/mdcopilot_blog/workflows/produce.py
 
 MDCopilot Blog is an internal editorial workspace for turning a healthcare/AI topic into a researched article that a person can inspect, edit, approve, and deliver to a website. It combines source discovery, evidence storage, topic selection, AI drafting and reviews, deterministic quality rules, human approval, and publication tracking.
 
-The seeded brand targets specialist physicians, clinical leaders, and healthcare operations teams. Its editorial position is that AI supports specialist expertise while physicians remain in control. It favors specific evidence, practical workflow implications, responsible AI, and clinically grounded language. The brand profile and source catalog are stored configuration; these are defaults, not hardcoded guarantees about every deployment's content.
+The seeded brand targets specialist physicians, clinical leaders, and healthcare operations teams. Its editorial position is that AI supports specialist expertise while physicians remain in control. It favors specific evidence, practical workflow implications, responsible AI, and clinically grounded language. The brand profile and source catalog are stored configuration; these are defaults, not hardcoded guarantees about every deployment's content.̌
 
 Primary use cases are:
 

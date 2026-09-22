@@ -33,6 +33,7 @@ from mdcopilot_blog.logs import configure_logging
 from mdcopilot_blog.prompts.registry import PromptRegistry, PromptRegistryError, default_prompt_root
 from mdcopilot_blog.services.audit import audit
 from mdcopilot_blog.settings import Settings, get_settings
+from mdcopilot_blog.workflows.dbos_config import DBOS_SYSTEM_SCHEMA
 
 ALEMBIC_INI = "alembic.ini"  # relative to the working directory (/app in every backend container)
 EXIT_OK = 0
@@ -78,14 +79,14 @@ def migrate_dbos(settings: Settings) -> int:
     captured = io.StringIO()
     try:
         with redirect_stdout(captured):  # dbos echoes a failure's cause to stdout
-            run_dbos_database_migrations(url, schema="dbos")
+            run_dbos_database_migrations(url, schema=DBOS_SYSTEM_SCHEMA)
     except RuntimeError:  # dbos echoes the cause, then raises click.exceptions.Exit(1), a RuntimeError
-        detail = _redact(captured.getvalue().strip(), url, settings.postgres_password.get_secret_value())
+        detail = _redact(captured.getvalue().strip(), url, settings.database_url().password or "")
         print(f"migrate-dbos: {detail or 'DBOS migrations failed'}", file=sys.stderr)
         return EXIT_FAILED
     finally:
         dbos_logger.setLevel(previous_level)
-    print("migrate-dbos: DBOS system tables are up to date (schema dbos)")
+    print(f"migrate-dbos: DBOS system tables are up to date (schema {DBOS_SYSTEM_SCHEMA})")
     return EXIT_OK
 
 
@@ -188,7 +189,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("migrate", help="alembic upgrade head, then migrate-dbos, seed and sync-prompts")
-    sub.add_parser("migrate-dbos", help="create or upgrade the DBOS system tables (schema dbos)")
+    sub.add_parser("migrate-dbos", help=f"create or upgrade the DBOS system tables (schema {DBOS_SYSTEM_SCHEMA})")
     sub.add_parser("seed", help="insert default settings, brand profile and content pillars (idempotent)")
     sub.add_parser("sync-prompts", help="register prompt files in blog_prompt_versions")
     sub.add_parser("purge-snapshots", help="purge expired source snapshots while retaining active research")

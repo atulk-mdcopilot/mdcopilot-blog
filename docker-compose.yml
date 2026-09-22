@@ -7,35 +7,17 @@ x-backend: &backend
     target: runtime
   env_file: .env
   environment:
-    POSTGRES_HOST: db
+    # The mdcopilot-backend database (same URL the root docker-compose.yml gives backend and drive).
+    # Blog tables are blog_*, Alembic history is blog_alembic_versions, DBOS uses schema blog_dbos.
+    DATABASE_URL: postgresql://mdcopilot_user:mdcopilot_pass@postgres:5432/mdcopilot
   extra_hosts:
     - "host.docker.internal:host-gateway"
 
 services:
-  db:
-    image: pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
-    environment:
-      POSTGRES_DB: "${POSTGRES_DB:-mdcopilot_blog}"
-      POSTGRES_USER: "${POSTGRES_USER:-mdcopilot_blog}"
-      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}"
-    ports:
-      - "127.0.0.1:${DB_HOST_PORT:-5440}:5432"
-    volumes:
-      - blog_pgdata:/var/lib/postgresql/data
-    restart: unless-stopped
-    healthcheck:
-      test: [CMD-SHELL, 'pg_isready -h 127.0.0.1 -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
-      interval: 5s
-      timeout: 5s
-      retries: 20
-      start_period: 10s
-
+  # No database service: start the root stack (../docker-compose.yml) first; its postgres is the database.
   migrate:
     <<: *backend
     command: [python, -m, mdcopilot_blog.cli, migrate]
-    depends_on:
-      db:
-        condition: service_healthy
     restart: "no"
 
   api:
@@ -83,5 +65,8 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-volumes:
-  blog_pgdata: {}
+# Join the root stack network (project "mdcopilot") so "postgres" resolves to the backend database.
+networks:
+  default:
+    name: mdcopilot_mdcopilot-network
+    external: true

@@ -38,7 +38,7 @@ class Review(UUIDPk, CreatedAt, Base):
     agent_provider: Mapped[str | None] = mapped_column(String(32))
     agent_model: Mapped[str | None] = mapped_column(String(128))
     gate_run_kind: Mapped[str | None] = mapped_column(String(16))
-    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("blog_users.id", ondelete="SET NULL"))
     reason: Mapped[str | None] = mapped_column(Text)
     dbos_workflow_id: Mapped[str | None] = mapped_column(String(128))
     dbos_step_id: Mapped[int | None]

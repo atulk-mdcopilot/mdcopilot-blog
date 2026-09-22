@@ -5,7 +5,7 @@ from dbos import DBOSConfig
 from mdcopilot_blog.settings import Settings
 
 DBOS_APP_NAME = "mdcopilot-blog"
-DBOS_SYSTEM_SCHEMA = "dbos"
+DBOS_SYSTEM_SCHEMA = "blog_dbos"  # blog_ namespace in the shared mdcopilot-backend database
 
 
 def build_dbos_config(settings: Settings) -> DBOSConfig:
