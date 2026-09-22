@@ -113,7 +113,7 @@ async def store_search(
 
 
 async def run_deep_research(
-    sc: StepContext, *, article_id: uuid.UUID, candidate_id: uuid.UUID, avoid_source_ids: Sequence[uuid.UUID]
+    sc: StepContext, *, article_id: uuid.UUID, candidate_id: uuid.UUID, avoid_source_ids: Sequence[uuid.UUID] = ()
 ) -> DeepResearchResult:
     async with sc.sessionmaker() as db:
         article = await db.get(Article, article_id)

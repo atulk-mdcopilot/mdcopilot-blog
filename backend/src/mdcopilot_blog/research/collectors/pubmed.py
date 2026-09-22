@@ -99,7 +99,7 @@ class PubMedClient:
         async with self._lock:
             wait = self._last + self._env.pubmed_min_interval - time.monotonic()
             if wait > 0:
-                await self._asyncio.sleep(wait)
+                await asyncio.sleep(wait)
             self._last = time.monotonic()
 
     async def _get(self, url: str, endpoint: str) -> dict[str, Any]:
