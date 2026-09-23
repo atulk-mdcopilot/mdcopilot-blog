@@ -22,18 +22,19 @@ Details: [docs/architecture.md](docs/architecture.md) (API, pipeline, tables, se
 
 Everything runs in Docker. Never run Python on the host.
 
-1. Start the MDCopilot root stack first (`docker compose up -d` in the workspace root). The blog uses its
-   Postgres and its network (`mdcopilot_mdcopilot-network`), and the root `docker-compose.yml` already gives
-   the backend `BLOG_AGENT_INTERNAL_URL=http://blog-api:8000` and the matching token.
-2. Copy `.env.example` to `.env` and fill in `OPENAI_API_KEY` (required: web search). `GEMINI_API_KEY` is
+The blog has no compose file of its own: the workspace-root `docker-compose.yml` runs it with the rest of
+MDCopilot (services `blog-api` and `blog-worker`, on the root network, using the root Postgres).
+
+1. Copy `.env.example` to `.env` and fill in `OPENAI_API_KEY` (required: web search). `GEMINI_API_KEY` is
    optional but recommended (the default research and review routes put Gemini first; a provider without a key
    is skipped). Anthropic and NCBI keys are optional.
-3. `docker compose up -d --build --wait` in this directory.
+2. `docker compose up -d` in the workspace root starts everything, the blog included.
 
-Services: `api` (applies migrations on startup: `alembic upgrade head`, DBOS system tables, seed, prompt
-sync; then serves; network alias `blog-api`, no host port) and `worker` (starts once the api is healthy). `docker-compose.yml` sets `DATABASE_URL` and the
-development service tokens; they must match the root stack (`BLOG_INTERNAL_TOKEN` = backend
-`BLOG_AGENT_INTERNAL_TOKEN`, `BACKEND_INTERNAL_TOKEN` = backend `INTERNAL_TOKEN`).
+Services: `blog-api` (starts once postgres and the backend are healthy; applies migrations on startup:
+`alembic upgrade head`, DBOS system tables, seed, prompt sync; then serves; no host port) and `blog-worker`
+(starts once `blog-api` is healthy). The root `docker-compose.yml` sets `DATABASE_URL` and the development
+service tokens, which match the backend's (`BLOG_INTERNAL_TOKEN` = backend `BLOG_AGENT_INTERNAL_TOKEN`,
+`BACKEND_INTERNAL_TOKEN` = backend `INTERNAL_TOKEN`).
 
 Data lives in the mdcopilot-backend database: 20 `blog_*` tables, Alembic history in `blog_alembic_versions`
 (separate from the backend's `alembic_version`) and DBOS state in schema `blog_dbos`. Blog data is
@@ -63,8 +64,10 @@ backend/
 ## Maintenance
 
 ```sh
-docker compose logs --tail=100 api worker
-docker compose exec api python -m mdcopilot_blog.cli migrate   # also: migrate-dbos, seed, sync-prompts
+# from the workspace root
+docker compose logs --tail=100 blog-api blog-worker
+docker compose exec blog-api python -m mdcopilot_blog.cli migrate   # also: migrate-dbos, seed, sync-prompts
+# from this directory
 docker build --target dev -t mdcopilot-blog-backend:dev-tmp backend   # image with ruff, for lint/format
 ```
 

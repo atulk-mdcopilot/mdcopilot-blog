@@ -12,11 +12,12 @@ mdcopilot-backend; the only thing the worker calls inside MDCopilot is the backe
 
 | Compose service | Command | Notes |
 | --- | --- | --- |
-| `api` | `python -m mdcopilot_blog.cli migrate && exec uvicorn --factory mdcopilot_blog.api.app:create_app` | migrations first (alembic upgrade head, DBOS system tables, seed, prompt sync; idempotent), then serves; network alias `blog-api`, port 8000 on the Docker network only, healthcheck `/readyz` |
-| `worker` | `python -m mdcopilot_blog.worker` | waits for the api to be healthy (so migrations are done); executes queue `pipeline`, worker concurrency 1, heartbeat-file healthcheck |
+| `blog-api` | `python -m mdcopilot_blog.cli migrate && exec uvicorn --factory mdcopilot_blog.api.app:create_app` | starts after postgres and the backend are healthy; migrations first (alembic upgrade head, DBOS system tables, seed, prompt sync; idempotent), then serves; port 8000 on the Docker network only, healthcheck `/readyz` |
+| `blog-worker` | `python -m mdcopilot_blog.worker` | waits for the api to be healthy (so migrations are done); executes queue `pipeline`, worker concurrency 1, heartbeat-file healthcheck |
 
-The compose project joins the root stack's network `mdcopilot_mdcopilot-network` (external), so `postgres`
-and `backend` resolve. Start the root stack first.
+Both services are defined in the workspace-root `docker-compose.yml` (there is no blog compose file), so
+`docker compose up -d` there starts the blog with the rest of MDCopilot; `postgres` and `backend` resolve on
+the shared `mdcopilot-network`.
 
 ## 2. How it is called
 
