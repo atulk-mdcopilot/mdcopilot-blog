@@ -53,12 +53,13 @@ async def get_run_status(sm: SessionMaker, run_id: uuid.UUID) -> RunStatus:
     return RunStatus(status)
 
 
-async def get_run_trace_id(sm: SessionMaker, run_id: uuid.UUID) -> str:
+async def get_run_trace_id(sm: SessionMaker, run_id: uuid.UUID) -> tuple[str, str | None]:
+    """The run's (trace_id, created_by); created_by is the backend users.id of the admin who started it."""
     async with sm() as session:
-        trace_id = await session.scalar(select(BlogRun.trace_id).where(BlogRun.id == run_id))
-    if trace_id is None:
+        row = (await session.execute(select(BlogRun.trace_id, BlogRun.created_by).where(BlogRun.id == run_id))).first()
+    if row is None:
         raise LookupError(f"run {run_id} not found")
-    return trace_id
+    return row.trace_id, row.created_by
 
 
 async def get_attempt_status(sm: SessionMaker, workflow_id: str) -> AttemptStatus | None:
@@ -173,6 +174,7 @@ class StepHandle:
     trace_id: str
     run_id: uuid.UUID
     attempt_id: uuid.UUID | None
+    tries: int
 
     def call_context(self) -> CallContext:
         return CallContext(
@@ -329,6 +331,7 @@ async def track_step(
         trace_id=trace_id,
         run_id=run_id,
         attempt_id=attempt_id,
+        tries=tries,
     )
     try:
         yield handle

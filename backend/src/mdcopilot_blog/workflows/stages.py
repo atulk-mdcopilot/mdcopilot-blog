@@ -11,6 +11,7 @@ from dbos import DBOS
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from mdcopilot_blog import tracing
 from mdcopilot_blog.db.models import Article, RunAttempt
 from mdcopilot_blog.domain.enums import ArticleStatus, AttemptStatus, RunStatus
 from mdcopilot_blog.domain.state_machine import Entity, InvalidTransition, can_transition
@@ -133,27 +134,44 @@ async def tracked_stage(
         ):
             await finish_attempt(rt.sessionmaker, workflow_id=workflow_id, status=AttemptStatus.CANCELLED)
             return STOP
-        trace_id = await get_run_trace_id(rt.sessionmaker, rid)
+        trace_id, created_by = await get_run_trace_id(rt.sessionmaker, rid)
         bind_log_context(run_id=str(rid), trace_id=trace_id)
-        async with track_step(
-            rt.sessionmaker, run_id=rid, attempt_id=aid, step_name=step_name, trace_id=trace_id, agent_name=agent_name
-        ) as handle:
-            sc = await build_step_context(
-                settings=rt.settings,
-                sessionmaker=rt.sessionmaker,
-                gateway=rt.gateway,
-                prompts=rt.prompts,
-                call=handle.call_context(),
-            )
-            if article_id:
-                sc = sc.with_ids(article_id=uuid.UUID(article_id))
-            output = await body(StageContext(sc, rid, aid, workflow_id, step_name, trace_id))
-            if await get_attempt_status(rt.sessionmaker, workflow_id) == AttemptStatus.CANCELLED or (
-                await get_run_status(rt.sessionmaker, rid) == RunStatus.CANCELLED
-            ):
-                await finish_attempt(rt.sessionmaker, workflow_id=workflow_id, status=AttemptStatus.CANCELLED)
-                return STOP
-            return {"cancelled": False, **output}
+        # One stage.<step_name> span per step execution (a DBOS re-execution is a new span with tries+1).
+        # span is None when tracing is off.
+        with tracing.stage_span(
+            trace_id=trace_id,
+            step_name=step_name,
+            run_id=str(rid),
+            user_id=created_by,
+            workflow_name=workflow_name,
+            workflow_id=workflow_id,
+            agent=agent_name,
+        ) as span:
+            async with track_step(
+                rt.sessionmaker,
+                run_id=rid,
+                attempt_id=aid,
+                step_name=step_name,
+                trace_id=trace_id,
+                agent_name=agent_name,
+            ) as handle:
+                tracing.annotate(span, tries=handle.tries, dbos_step_id=handle.step_id)
+                sc = await build_step_context(
+                    settings=rt.settings,
+                    sessionmaker=rt.sessionmaker,
+                    gateway=rt.gateway,
+                    prompts=rt.prompts,
+                    call=handle.call_context(),
+                )
+                if article_id:
+                    sc = sc.with_ids(article_id=uuid.UUID(article_id))
+                output = await body(StageContext(sc, rid, aid, workflow_id, step_name, trace_id))
+                if await get_attempt_status(rt.sessionmaker, workflow_id) == AttemptStatus.CANCELLED or (
+                    await get_run_status(rt.sessionmaker, rid) == RunStatus.CANCELLED
+                ):
+                    await finish_attempt(rt.sessionmaker, workflow_id=workflow_id, status=AttemptStatus.CANCELLED)
+                    return STOP
+                return {"cancelled": False, **output}
 
     return await DBOS.run_step_async(step_options(step_name, retries=retries), execute)
 

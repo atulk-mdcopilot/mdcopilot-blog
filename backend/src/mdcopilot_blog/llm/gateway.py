@@ -24,6 +24,7 @@ from pydantic_ai.messages import ModelMessage
 from pydantic_ai.settings import ModelSettings
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from mdcopilot_blog import tracing
 from mdcopilot_blog.domain.enums import AgentName, CallKind, CallStatus
 from mdcopilot_blog.domain.errors import OutputRejected
 from mdcopilot_blog.llm.concurrency import ProviderLimiter, process_limiter
@@ -235,6 +236,7 @@ class LLMGateway:
     async def _record_agent_attempt(
         self,
         *,
+        gen: Any,
         spec: AgentSpec[Any],
         rendered: RenderedPrompt,
         choice: ModelChoice,
@@ -250,35 +252,37 @@ class LLMGateway:
         price_version: str | None = None,
         raw_extra: dict[str, object] | None = None,
     ) -> None:
-        await self._recorder.record(
-            CallRecord(
-                kind=CallKind.AGENT,
-                ctx=ctx,
-                provider_requested=choice.provider,
-                model_requested=choice.model,
-                attempt_index=index,
-                status=CallStatus.OK if error is None else CallStatus.ERROR,
-                latency_ms=_elapsed_ms(started),
-                agent_name=spec.name.value,
-                prompt_name=rendered.name,
-                prompt_version=rendered.version,
-                prompt_sha=rendered.sha256,
-                provider_served=usage.provider_served or provider_fallback,
-                model_served=usage.model_served,
-                fallback_from=fallback_from,
-                params=params,
-                input_tokens=usage.input_tokens,
-                output_tokens=usage.output_tokens,
-                cache_read_tokens=usage.cache_read_tokens,
-                cache_write_tokens=usage.cache_write_tokens,
-                reasoning_tokens=usage.reasoning_tokens,
-                cost_usd=usage.cost_usd if cost_usd is None else cost_usd,
-                usage_raw={**usage.raw, **(raw_extra or {})},
-                price_version=PRICE_VERSION if price_version is None else price_version,
-                error_class=None if error is None else type(error).__name__,
-                error_message=None if error is None else str(error),
-            )
+        """Write the attempt's ledger row, then fill its generation from that row (gen is None when tracing is off)."""
+        rec = CallRecord(
+            kind=CallKind.AGENT,
+            ctx=ctx,
+            provider_requested=choice.provider,
+            model_requested=choice.model,
+            attempt_index=index,
+            status=CallStatus.OK if error is None else CallStatus.ERROR,
+            latency_ms=_elapsed_ms(started),
+            agent_name=spec.name.value,
+            prompt_name=rendered.name,
+            prompt_version=rendered.version,
+            prompt_sha=rendered.sha256,
+            provider_served=usage.provider_served or provider_fallback,
+            model_served=usage.model_served,
+            fallback_from=fallback_from,
+            params=params,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            cache_read_tokens=usage.cache_read_tokens,
+            cache_write_tokens=usage.cache_write_tokens,
+            reasoning_tokens=usage.reasoning_tokens,
+            cost_usd=usage.cost_usd if cost_usd is None else cost_usd,
+            usage_raw={**usage.raw, **(raw_extra or {})},
+            price_version=PRICE_VERSION if price_version is None else price_version,
+            error_class=None if error is None else type(error).__name__,
+            error_message=None if error is None else str(error),
         )
+        row_id = await self._recorder.record(rec)  # the row id exists only after the insert (recorder.py:101)
+        if gen is not None:
+            tracing.update_generation(gen, rec, ledger_row_id=row_id)
 
     async def _price_attempt(
         self, choice: ModelChoice, system: str | None, usage: _Usage, at: datetime
@@ -324,6 +328,10 @@ class LLMGateway:
         }
         failures: list[tuple[str, str]] = []
         previous_ref: str | None = None
+        # Allowlisted model parameters for the generation; params also holds timeout and agent_version.
+        model_params: dict[str, object] = {"max_tokens": spec.max_output_tokens}
+        if spec.reasoning is not None:
+            model_params["reasoning_effort"] = spec.reasoning
 
         for index, choice in enumerate(route):
             if index > 0:
@@ -335,94 +343,108 @@ class LLMGateway:
                 reasoning=spec.reasoning,
             )
 
-            at = datetime.now(UTC)
-            started = time.perf_counter()
-            messages: list[ModelMessage] = []
-            system: str | None = None
-            try:
-                with capture_run_messages() as messages:
-                    model = self._model_factory.build(choice, spec)
-                    system = model.system
-                    agent = Agent(
-                        model,
-                        output_type=spec.output_type,
-                        instructions=rendered.text,
-                        retries={"output": spec.output_retries},
+            # One generation per route attempt, i.e. per blog_llm_calls row; gen is None when tracing is off.
+            with tracing.generation(
+                f"llm.{choice.provider}.complete",
+                model=choice.model,
+                model_parameters=model_params,
+            ) as gen:
+                if gen is not None and tracing.capture_full():
+                    sent = [{"role": "system", "content": rendered.text}, {"role": "user", "content": user_prompt}]
+                    gen.update(input=tracing.content(sent))
+                at = datetime.now(UTC)
+                started = time.perf_counter()
+                messages: list[ModelMessage] = []
+                system: str | None = None
+                try:
+                    with capture_run_messages() as messages:
+                        model = self._model_factory.build(choice, spec)
+                        system = model.system
+                        agent = Agent(
+                            model,
+                            output_type=spec.output_type,
+                            instructions=rendered.text,
+                            retries={"output": spec.output_retries},
+                        )
+                        if output_check is not None:
+                            _attach_output_check(agent, output_check)
+                        async with self._limiter.slot(choice.provider):
+                            result = await agent.run(user_prompt, model_settings=model_settings)
+                except ADVANCE_ERRORS as exc:
+                    failed_usage = _sum_usage(messages)
+                    cost_usd, price_version, raw_extra = await self._price_attempt(choice, system, failed_usage, at)
+                    await self._record_agent_attempt(
+                        gen=gen,
+                        spec=spec,
+                        rendered=rendered,
+                        choice=choice,
+                        index=index,
+                        fallback_from=previous_ref,
+                        ctx=ctx,
+                        params=params,
+                        started=started,
+                        usage=failed_usage,
+                        provider_fallback=system,
+                        error=exc,
+                        cost_usd=cost_usd,
+                        price_version=price_version,
+                        raw_extra=raw_extra,
                     )
-                    if output_check is not None:
-                        _attach_output_check(agent, output_check)
-                    async with self._limiter.slot(choice.provider):
-                        result = await agent.run(user_prompt, model_settings=model_settings)
-            except ADVANCE_ERRORS as exc:
-                failed_usage = _sum_usage(messages)
-                cost_usd, price_version, raw_extra = await self._price_attempt(choice, system, failed_usage, at)
-                await self._record_agent_attempt(
-                    spec=spec,
-                    rendered=rendered,
-                    choice=choice,
-                    index=index,
-                    fallback_from=previous_ref,
-                    ctx=ctx,
-                    params=params,
-                    started=started,
-                    usage=failed_usage,
-                    provider_fallback=system,
-                    error=exc,
-                    cost_usd=cost_usd,
-                    price_version=price_version,
-                    raw_extra=raw_extra,
-                )
-                failures.append((choice.ref(), type(exc).__name__))
-                previous_ref = choice.ref()
-                continue
-            except Exception as exc:
-                failed_usage = _sum_usage(messages)
-                cost_usd, price_version, raw_extra = await self._price_attempt(choice, system, failed_usage, at)
-                await self._record_agent_attempt(
-                    spec=spec,
-                    rendered=rendered,
-                    choice=choice,
-                    index=index,
-                    fallback_from=previous_ref,
-                    ctx=ctx,
-                    params=params,
-                    started=started,
-                    usage=failed_usage,
-                    provider_fallback=system,
-                    error=exc,
-                    cost_usd=cost_usd,
-                    price_version=price_version,
-                    raw_extra=raw_extra,
-                )
-                raise
+                    failures.append((choice.ref(), type(exc).__name__))
+                    previous_ref = choice.ref()
+                    continue
+                except Exception as exc:
+                    failed_usage = _sum_usage(messages)
+                    cost_usd, price_version, raw_extra = await self._price_attempt(choice, system, failed_usage, at)
+                    await self._record_agent_attempt(
+                        gen=gen,
+                        spec=spec,
+                        rendered=rendered,
+                        choice=choice,
+                        index=index,
+                        fallback_from=previous_ref,
+                        ctx=ctx,
+                        params=params,
+                        started=started,
+                        usage=failed_usage,
+                        provider_fallback=system,
+                        error=exc,
+                        cost_usd=cost_usd,
+                        price_version=price_version,
+                        raw_extra=raw_extra,
+                    )
+                    raise
 
-            usage = _sum_usage(result.all_messages())
-            cost_usd, price_version, raw_extra = await self._price_attempt(choice, system, usage, at)
-            await self._record_agent_attempt(
-                spec=spec,
-                rendered=rendered,
-                choice=choice,
-                index=index,
-                fallback_from=previous_ref,
-                ctx=ctx,
-                params=params,
-                started=started,
-                usage=usage,
-                provider_fallback=system,
-                error=None,
-                cost_usd=cost_usd,
-                price_version=price_version,
-                raw_extra=raw_extra,
-            )
-            return AgentResult(
-                output=result.output,
-                provider=usage.provider_served or system or choice.provider,
-                model=usage.model_served or choice.model,
-                attempts=index + 1,
-                input_tokens=usage.input_tokens,
-                output_tokens=usage.output_tokens,
-                cost_usd=cost_usd,
-            )
+                usage = _sum_usage(result.all_messages())
+                cost_usd, price_version, raw_extra = await self._price_attempt(choice, system, usage, at)
+                await self._record_agent_attempt(
+                    gen=gen,
+                    spec=spec,
+                    rendered=rendered,
+                    choice=choice,
+                    index=index,
+                    fallback_from=previous_ref,
+                    ctx=ctx,
+                    params=params,
+                    started=started,
+                    usage=usage,
+                    provider_fallback=system,
+                    error=None,
+                    cost_usd=cost_usd,
+                    price_version=price_version,
+                    raw_extra=raw_extra,
+                )
+                if gen is not None and tracing.capture_full():
+                    gen.update(output=tracing.content(result.output.model_dump(mode="json")))
+                return AgentResult(
+                    output=result.output,
+                    provider=usage.provider_served or system or choice.provider,
+                    model=usage.model_served or choice.model,
+                    attempts=index + 1,
+                    input_tokens=usage.input_tokens,
+                    output_tokens=usage.output_tokens,
+                    cost_usd=cost_usd,
+                )
 
         raise RouteExhausted(spec.name.value, failures)
 
@@ -445,12 +467,19 @@ class LLMGateway:
             if fee is None or fee.per_1k_calls is None:
                 raise PriceMissing(provider_served_key, SEARCH_FEE_SKU)
 
-        try:
-            async with self._limiter.slot(provider.name):
-                result = await provider.search(query)
-        except Exception as exc:
-            await self._recorder.record(
-                CallRecord(
+        # One generation per search attempt, i.e. per blog_llm_calls row; gen is None when tracing is off.
+        with tracing.generation(
+            f"llm.{provider.name}.responses",
+            model=model_requested,
+            metadata={"purpose": "web_search", "mode": query.mode},
+        ) as gen:
+            if gen is not None and tracing.capture_full():
+                gen.update(input=tracing.content(query.text))
+            try:
+                async with self._limiter.slot(provider.name):
+                    result = await provider.search(query)
+            except Exception as exc:
+                rec = CallRecord(
                     kind=CallKind.SEARCH,
                     ctx=ctx,
                     provider_requested=provider.name,
@@ -463,35 +492,36 @@ class LLMGateway:
                     error_class=type(exc).__name__,
                     error_message=str(exc),
                 )
-            )
-            raise
+                row_id = await self._recorder.record(rec)
+                if gen is not None:
+                    tracing.update_generation(gen, rec, ledger_row_id=row_id)
+                raise
 
-        details = getattr(result, "usage_details", None)
-        details = dict(details) if isinstance(details, Mapping) else {}
-        cache_read_tokens = _detail_int(details, "cache_read_tokens")
-        reasoning_tokens = _detail_int(details, "reasoning_tokens")
-        cost_usd = result.cost_usd
-        price_version: str = PRICE_VERSION
-        if is_real and fee is not None and at is not None:
-            priced = await price_search_call(
-                self._price_book,
-                provider_requested=provider.name,
-                model_requested=model_requested,
-                provider_served=result.provider,
-                model_served=result.model,
-                usage=TokenUsage(result.input_tokens, result.output_tokens, cache_read_tokens),
-                search_actions=result.search_actions,
-                fee=fee,
-                at=at,
-            )
-            cost_usd, price_version = priced.cost_usd, priced.price_version
-            details["pricing"] = priced.source
-        usage_raw: dict[str, object] = dict(details)
-        usage_raw["search_actions"] = result.search_actions
-        usage_raw["sources"] = len(result.sources)
-        usage_raw["citations"] = len(result.citations)
-        await self._recorder.record(
-            CallRecord(
+            details = getattr(result, "usage_details", None)
+            details = dict(details) if isinstance(details, Mapping) else {}
+            cache_read_tokens = _detail_int(details, "cache_read_tokens")
+            reasoning_tokens = _detail_int(details, "reasoning_tokens")
+            cost_usd = result.cost_usd
+            price_version: str = PRICE_VERSION
+            if is_real and fee is not None and at is not None:
+                priced = await price_search_call(
+                    self._price_book,
+                    provider_requested=provider.name,
+                    model_requested=model_requested,
+                    provider_served=result.provider,
+                    model_served=result.model,
+                    usage=TokenUsage(result.input_tokens, result.output_tokens, cache_read_tokens),
+                    search_actions=result.search_actions,
+                    fee=fee,
+                    at=at,
+                )
+                cost_usd, price_version = priced.cost_usd, priced.price_version
+                details["pricing"] = priced.source
+            usage_raw: dict[str, object] = dict(details)
+            usage_raw["search_actions"] = result.search_actions
+            usage_raw["sources"] = len(result.sources)
+            usage_raw["citations"] = len(result.citations)
+            rec = CallRecord(
                 kind=CallKind.SEARCH,
                 ctx=ctx,
                 provider_requested=provider.name,
@@ -512,7 +542,11 @@ class LLMGateway:
                 price_version=price_version,
                 usage_raw=usage_raw,
             )
-        )
+            row_id = await self._recorder.record(rec)
+            if gen is not None and tracing.capture_full():
+                gen.update(output=tracing.content(result.answer_text))
+            if gen is not None:
+                tracing.update_generation(gen, rec, ledger_row_id=row_id)
         return result
 
 

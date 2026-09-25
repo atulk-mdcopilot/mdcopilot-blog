@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from mdcopilot_blog import tracing
 from mdcopilot_blog.api.deps import Principal
 from mdcopilot_blog.api.schemas import DraftOut, ManualRunRequest
 from mdcopilot_blog.db.models import AgentRun, Article, BlogRun, RunAttempt
@@ -45,35 +46,46 @@ async def create_manual_run(
     if not settings.agent_enabled:
         raise ProblemError(409, "Agent disabled", "BLOG_AGENT_ENABLED is false, so new runs are rejected.")
 
-    run = BlogRun(
-        status=RunStatus.QUEUED.value,
-        params=request.model_dump(mode="json", exclude_none=True),
-        trace_id=new_trace_id(),
-        created_by=principal.user_id,
-    )
-    db.add(run)
-    await db.flush()
-    workflow_id = manual_workflow_id(run.id)
-    await db.commit()
-
-    try:
-        await client.enqueue(
-            workflow_name=WORKFLOW_DISCOVER_TOPICS,
-            queue_name=QUEUE_PIPELINE,
-            workflow_id=workflow_id,
-            args=(str(run.id),),
-            timeout_seconds=settings.discovery_timeout_minutes * 60,
+    # Phase 1: the run's trace id is minted here (the backend sends no traceparent yet), then the blog.run span
+    # covers the insert and the enqueue. The worker's stage spans join the same trace via blog_runs.trace_id.
+    trace_id = new_trace_id()
+    with tracing.run_root(
+        trace_id=trace_id,
+        user_id=principal.user_id,
+        workflow_name=WORKFLOW_DISCOVER_TOPICS,
+    ) as obs:
+        run = BlogRun(
+            status=RunStatus.QUEUED.value,
+            params=request.model_dump(mode="json", exclude_none=True),
+            trace_id=trace_id,
+            created_by=principal.user_id,
         )
-    except Exception as exc:
-        logger.exception("enqueue failed", extra={"run_id": str(run.id), "workflow_id": workflow_id})
-        require_transition(Entity.RUN, run.status, RunStatus.FAILED.value)
-        run.status = RunStatus.FAILED.value
-        run.finished_at = datetime.now(UTC)
-        run.error = {"class": type(exc).__name__, "message": str(exc)[:ERROR_MESSAGE_LIMIT]}
+        db.add(run)
+        await db.flush()
+        workflow_id = manual_workflow_id(run.id)
+        tracing.annotate(obs, run_id=str(run.id), dbos_workflow_id=workflow_id)
         await db.commit()
-        raise ProblemError(503, "Workflow service unavailable", f"run {run.id} was marked FAILED") from exc
 
-    logger.info("manual run enqueued", extra={"run_id": str(run.id), "workflow_id": workflow_id})
+        try:
+            await client.enqueue(
+                workflow_name=WORKFLOW_DISCOVER_TOPICS,
+                queue_name=QUEUE_PIPELINE,
+                workflow_id=workflow_id,
+                args=(str(run.id),),
+                timeout_seconds=settings.discovery_timeout_minutes * 60,
+            )
+        except Exception as exc:
+            logger.exception("enqueue failed", extra={"run_id": str(run.id), "workflow_id": workflow_id})
+            # run_root's exit records the ProblemError class as the status; keep the real cause class too.
+            tracing.annotate(obs, error_class=type(exc).__name__)
+            require_transition(Entity.RUN, run.status, RunStatus.FAILED.value)
+            run.status = RunStatus.FAILED.value
+            run.finished_at = datetime.now(UTC)
+            run.error = {"class": type(exc).__name__, "message": str(exc)[:ERROR_MESSAGE_LIMIT]}
+            await db.commit()
+            raise ProblemError(503, "Workflow service unavailable", f"run {run.id} was marked FAILED") from exc
+
+        logger.info("manual run enqueued", extra={"run_id": str(run.id), "workflow_id": workflow_id})
     return run
 
 
