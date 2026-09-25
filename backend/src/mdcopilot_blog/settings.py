@@ -146,6 +146,23 @@ class Settings(BaseSettings):
     # --- Worker ---
     worker_executor_id: str = Field("worker-1", validation_alias="WORKER_EXECUTOR_ID")
 
+    # --- Langfuse tracing (architecture §16.10.1, §17.2): off by default ---
+    # tracing.init falls back with a WARNING on an out-of-range sample rate or an unknown environment or capture
+    # value. A blank value in .env means the default.
+    langfuse_tracing_enabled: bool = Field(False, validation_alias="LANGFUSE_TRACING_ENABLED")
+    langfuse_public_key: str | None = Field(None, validation_alias="LANGFUSE_PUBLIC_KEY")
+    langfuse_secret_key: SecretStr | None = Field(None, validation_alias="LANGFUSE_SECRET_KEY")
+    langfuse_base_url: str | None = Field(None, validation_alias="LANGFUSE_BASE_URL")
+    # Default: APP_ENV (development or production).
+    langfuse_tracing_environment: str | None = Field(None, validation_alias="LANGFUSE_TRACING_ENVIRONMENT")
+    # Default: APP_VERSION.
+    langfuse_release: str | None = Field(None, validation_alias="LANGFUSE_RELEASE")
+    langfuse_sample_rate: float = Field(1.0, validation_alias="LANGFUSE_SAMPLE_RATE")
+    langfuse_timeout: int = Field(5, validation_alias="LANGFUSE_TIMEOUT")
+    langfuse_flush_interval: float = Field(5.0, validation_alias="LANGFUSE_FLUSH_INTERVAL")
+    # none | full. Anything else is treated as none.
+    observability_capture_content: str = Field("none", validation_alias="OBSERVABILITY_CAPTURE_CONTENT")
+
     @field_validator("log_level", mode="before")
     @classmethod
     def _normalise_log_level(cls, value: object) -> object:

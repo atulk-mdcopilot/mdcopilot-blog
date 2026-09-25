@@ -12,6 +12,7 @@ from pathlib import Path
 
 from dbos import DBOS
 
+from mdcopilot_blog import tracing
 from mdcopilot_blog.logs import configure_logging
 from mdcopilot_blog.settings import Settings, get_settings
 from mdcopilot_blog.workflows import discover  # noqa: F401 -- register workflows before DBOS launch
@@ -44,6 +45,8 @@ def install_signal_handlers(stop: asyncio.Event) -> None:
 
 
 async def _run_dbos(settings: Settings, stop: asyncio.Event) -> None:
+    # Before DBOS(config=...), so Langfuse's TracerProvider is the global one should DBOS spans ever be enabled.
+    tracing.init(settings)
     rt = await build_runtime(settings)
     launched = False
     try:
@@ -74,6 +77,10 @@ async def _run_dbos(settings: Settings, stop: asyncio.Event) -> None:
             # async workflows it is waiting for, so it runs in a thread.
             await asyncio.to_thread(DBOS.destroy, workflow_completion_timeout_sec=WORKFLOW_COMPLETION_TIMEOUT_SECONDS)
             logger.info("DBOS destroyed")
+        # Flush the last spans once no workflow runs; each export attempt is bounded by LANGFUSE_TIMEOUT (§16.10.2).
+        # Called inline: DBOS.destroy shut down the loop's default executor (DBOS installs its own), so
+        # asyncio.to_thread would raise here, and nothing else needs this loop any more.
+        tracing.shutdown()
         set_runtime(None)
         await rt.engine.dispose()
 
